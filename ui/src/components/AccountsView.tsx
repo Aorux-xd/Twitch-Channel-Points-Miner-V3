@@ -357,7 +357,7 @@ export function AccountsView() {
                         if (started.length) {
                           messages.push(
                             started
-                              .map((s) => `${s.username}: screen ${s.screen ?? '—'}, pid ${s.pid ?? 0}`)
+                              .map((s) => `${s.username}: queued (multi runner)`)
                               .join('\n')
                           );
                         }
@@ -372,7 +372,9 @@ export function AccountsView() {
                           );
                         }
                         if (!started.length && selectedAccounts.length) {
-                          messages.push('ни одна сессия не запущена — проверьте screen -ls и logs/<user>.log');
+                          messages.push(
+                            'ни одна сессия не в desired — проверьте multi_session_runner и logs/sessions/<user>.log'
+                          );
                         }
                         if (messages.length) {
                           alert(messages.join('\n\n'));
@@ -563,7 +565,7 @@ export function AccountsView() {
                   }}
                   className="w-full py-4 bg-lime text-black font-bold lowercase text-sm rounded-xl hover:bg-white"
                 >
-                  создать accounts/&lt;user&gt;.py
+                  добавить в accounts.json
                 </button>
               </form>
             </motion.div>

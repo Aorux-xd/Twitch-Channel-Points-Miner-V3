@@ -1,9 +1,23 @@
-"""Simple per-key rate limiting for chat and reward activation."""
+"""Configurable per-key rate limiting (chat, redeem, GQL)."""
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+from pathlib import Path
+
+from TwitchChannelPointsMiner.platform.paths import CONFIG_DIR, ensure_dirs
+
+DEFAULT_LIMITS = {
+    "chat_send_sec": 0.85,
+    "redeem_sec": 1.0,
+    "gql_sec": 0.35,
+}
+
+_LIMITS_FILE = CONFIG_DIR / "rate_limits.json"
+_lock = threading.Lock()
+_limiters: dict[str, "RateLimiter"] = {}
 
 
 class RateLimiter:
@@ -24,7 +38,43 @@ class RateLimiter:
             self._last[key] = time.time()
 
 
-# Global limiters used by panel API paths
-CHAT_SEND_LIMITER = RateLimiter(0.85)
-REDEEM_LIMITER = RateLimiter(1.0)
-GQL_LIMITER = RateLimiter(0.35)
+def load_rate_limits() -> dict[str, float]:
+    ensure_dirs()
+    if not _LIMITS_FILE.exists():
+        return dict(DEFAULT_LIMITS)
+    try:
+        raw = json.loads(_LIMITS_FILE.read_text(encoding="utf-8"))
+        out = dict(DEFAULT_LIMITS)
+        for k in DEFAULT_LIMITS:
+            if k in raw:
+                out[k] = float(raw[k])
+        return out
+    except Exception:
+        return dict(DEFAULT_LIMITS)
+
+
+def _get_limiter(name: str, config_key: str) -> RateLimiter:
+    with _lock:
+        if name not in _limiters:
+            limits = load_rate_limits()
+            _limiters[name] = RateLimiter(limits.get(config_key, 1.0))
+        return _limiters[name]
+
+
+def reload_limiters() -> None:
+    with _lock:
+        _limiters.clear()
+
+
+class _GetLimiterProxy:
+    def __init__(self, name: str, key: str) -> None:
+        self._name = name
+        self._key = key
+
+    def wait(self, token: str) -> None:
+        _get_limiter(self._name, self._key).wait(token)
+
+
+CHAT_SEND_LIMITER = _GetLimiterProxy("chat", "chat_send_sec")
+REDEEM_LIMITER = _GetLimiterProxy("redeem", "redeem_sec")
+GQL_LIMITER = _GetLimiterProxy("gql", "gql_sec")
