@@ -1,0 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  
+  --color-dashboard-bg: var(--dashboard-bg);
+  --color-sidebar-bg: var(--sidebar-bg);
+  --color-card-bg: var(--card-bg);
+  --color-border: var(--border-color);
+  --color-text-main: var(--text-main);
+  --color-text-muted: var(--text-muted);
+  --color-lime: #ccff00;
+
+  --shadow-soft: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+}
+
+@layer base {
+  :root {
+    --dashboard-bg: #000000;
+    --sidebar-bg: rgba(0, 0, 0, 0.9);
+    --card-bg: #0a0a0a;
+    --border-color: rgba(255, 255, 255, 0.05);
+    --text-main: #ffffff;
+    --text-muted: #9ca3af;
+  }
+
+  .dark {
+    --dashboard-bg: #000000;
+    --sidebar-bg: rgba(0, 0, 0, 0.9);
+    --card-bg: #0a0a0a;
+    --border-color: rgba(255, 255, 255, 0.05);
+    --text-main: #ffffff;
+    --text-muted: #9ca3af;
+  }
+
+  body {
+    @apply font-sans bg-dashboard-bg text-text-main transition-colors duration-300 antialiased selection:bg-lime selection:text-black;
+  }
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #000;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-lime);
+}
+
+.glow-text {
+  text-shadow: 0 0 20px rgba(204,255,0,0.3);
+}
+
