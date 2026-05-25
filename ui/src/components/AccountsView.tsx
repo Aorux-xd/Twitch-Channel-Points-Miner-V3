@@ -152,11 +152,6 @@ export function AccountsView() {
               <span className="truncate">
                 {acc.has_config === false ? 'нет в accounts.json' : acc.file || '—'}
               </span>
-              {acc.screen && (
-                <span className="px-2 py-0.5 rounded border border-lime/30 text-lime">
-                  {acc.screen}
-                </span>
-              )}
               <span
                 className={cn(
                   'px-2 py-0.5 rounded border',

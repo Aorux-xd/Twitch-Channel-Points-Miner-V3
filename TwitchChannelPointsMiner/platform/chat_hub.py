@@ -27,6 +27,8 @@ JOIN_TIMEOUT_SEC = 15.0
 ECHO_VERIFY_SEC = 4.0
 MAX_SEND_WORKERS = 8
 BULK_SEND_DELAY_SEC = 1.2
+BULK_QUEUE_MAX = 32
+BULK_JOB_TIMEOUT_SEC = 300.0
 BULK_ECHO_VERIFY_SEC = 3.0
 BULK_IRC_FALLBACK_CODES = frozenset(
     {"msg_rejected", "RATE_LIMIT", "HTTP", "MISSING_SCOPE", "AUTH", "DROPPED", "HELIX_FAIL"}
@@ -471,12 +473,57 @@ def _send_once(account: str, token: str, streamer: str, text: str) -> bool:
     return ok_box[0]
 
 
+@dataclass
+class _BulkSendJob:
+    streamer: str
+    text: str
+    accounts: list[str]
+    done: threading.Event = field(default_factory=threading.Event)
+    results: list[dict] = field(default_factory=list)
+    error: str | None = None
+
+
 class ChatHub:
     def __init__(self):
         self._lock = threading.RLock()
         self._messages: dict[str, deque[ChatMessage]] = {}
         self._readers: dict[str, _ReaderThread] = {}
         self._reader_irc: dict[str, _PanelIRC] = {}
+        self._bulk_queue: queue.Queue[_BulkSendJob | None] = queue.Queue(
+            maxsize=BULK_QUEUE_MAX
+        )
+        threading.Thread(
+            target=self._bulk_send_worker, name="chat-bulk-send", daemon=True
+        ).start()
+
+    def _bulk_send_worker(self) -> None:
+        while True:
+            job = self._bulk_queue.get()
+            if job is None:
+                break
+            try:
+                for i, acc in enumerate(job.accounts):
+                    if i > 0:
+                        time.sleep(BULK_SEND_DELAY_SEC)
+                    try:
+                        job.results.append(
+                            self._send_one(job.streamer, acc, job.text, bulk=True)
+                        )
+                    except Exception as e:
+                        logger.warning("chat bulk send %s: %s", acc, e)
+                        job.results.append(
+                            {
+                                "account": acc,
+                                "ok": False,
+                                "error": str(e),
+                                "code": "WORKER",
+                            }
+                        )
+            except Exception as e:
+                job.error = str(e)
+            finally:
+                job.done.set()
+                self._bulk_queue.task_done()
 
     def _append(
         self,
@@ -718,22 +765,41 @@ class ChatHub:
         results: list[dict] = []
 
         if bulk:
-            for i, acc in enumerate(accounts):
-                if i > 0:
-                    time.sleep(BULK_SEND_DELAY_SEC)
-                try:
-                    results.append(self._send_one(streamer, acc, text, bulk=True))
-                except Exception as e:
-                    logger.warning("chat send %s: %s", acc, e)
-                    results.append(
-                        {
-                            "account": acc,
-                            "ok": False,
-                            "error": str(e),
-                            "code": "WORKER",
-                        }
-                    )
-            return results
+            job = _BulkSendJob(streamer=streamer, text=text, accounts=list(accounts))
+            try:
+                self._bulk_queue.put(job, timeout=2.0)
+            except queue.Full:
+                logger.warning("chat bulk queue full for #%s", streamer)
+                return [
+                    {
+                        "account": acc,
+                        "ok": False,
+                        "error": "очередь отправки переполнена — повторите позже",
+                        "code": "BACKPRESSURE",
+                    }
+                    for acc in accounts
+                ]
+            if not job.done.wait(timeout=BULK_JOB_TIMEOUT_SEC):
+                return [
+                    {
+                        "account": acc,
+                        "ok": False,
+                        "error": "таймаут очереди массовой отправки",
+                        "code": "QUEUE_TIMEOUT",
+                    }
+                    for acc in accounts
+                ]
+            if job.error:
+                return [
+                    {
+                        "account": acc,
+                        "ok": False,
+                        "error": job.error,
+                        "code": "WORKER",
+                    }
+                    for acc in accounts
+                ]
+            return job.results
 
         workers = min(MAX_SEND_WORKERS, len(accounts))
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -774,11 +840,24 @@ def _chat_status(streamer: str) -> dict:
         if streamer in _hub._reader_irc:
             joined = _hub._reader_irc[streamer]._join_ready.is_set()
         buf = len(_hub._messages.get(streamer, []))
+        msgs = _hub._messages.get(streamer, [])
+        last_ts = msgs[-1].ts if msgs else None
+    if alive and joined:
+        connection = "connected"
+    elif alive:
+        connection = "joining"
+    elif reader:
+        connection = "reconnecting"
+    else:
+        connection = "offline"
     return {
         "reader": reader,
         "reader_alive": alive,
         "reader_joined": joined,
         "buffer_messages": buf,
+        "last_message_ts": last_ts,
+        "connection": connection,
+        "bulk_queue_size": _hub._bulk_queue.qsize(),
     }
 
 

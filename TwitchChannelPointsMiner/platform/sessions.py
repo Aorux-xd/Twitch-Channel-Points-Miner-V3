@@ -17,7 +17,9 @@ from TwitchChannelPointsMiner.platform.events_log import log_event
 from TwitchChannelPointsMiner.platform.multi_session_manager import (
     get_runtime_state,
     manager_pid_running,
+    notify_sessions_changed,
     read_desired_sessions,
+    worker_resource_stats,
 )
 from TwitchChannelPointsMiner.platform.paths import (
     COOKIES_DIR,
@@ -86,6 +88,9 @@ def sessions_debug() -> dict:
     desired = read_desired_sessions()
     runtime = get_runtime_state()
     active = active_worker_usernames()
+    worker_details = {
+        u: worker_resource_stats(u, runtime) for u in sorted(set(desired) | active)
+    }
     return {
         "manager_pid": manager_pid_running(),
         "manager_alive": manager_pid_running() is not None,
@@ -96,6 +101,7 @@ def sessions_debug() -> dict:
         "orphan_desired": sorted(set(desired) - active),
         "orphan_running": sorted(active - set(desired)),
         "runtime": runtime,
+        "worker_details": worker_details,
     }
 
 
@@ -112,6 +118,7 @@ def multi_runner_system_stats() -> dict:
 
 def _save_sessions(sessions: dict) -> None:
     _write_json(SESSIONS_FILE, {"sessions": sessions})
+    notify_sessions_changed()
 
 
 def _ensure_multi_manager() -> bool:
@@ -234,6 +241,30 @@ def stop_sessions(usernames: list[str]) -> dict:
 def restart_sessions(usernames: list[str]) -> dict:
     """Re-auth / config refresh: remove from desired, stop, re-add, reconcile starts thread."""
     usernames = [str(u).strip() for u in usernames if str(u).strip()]
+    if len(usernames) == 1:
+        return restart_single_session(usernames[0])
     stop_sessions(usernames)
     time.sleep(2.0)
     return start_sessions(usernames)
+
+
+def restart_single_session(username: str) -> dict:
+    """Restart one bot only (e.g. after device re-auth) without touching other sessions."""
+    username = username.strip()
+    if not username:
+        return {"started": [], "skipped": [{"username": "", "reason": "empty_username"}]}
+    sessions = read_desired_sessions()
+    was_desired = username in sessions
+    stop_flag = STATUS_DIR / f"{username}.stop"
+    stop_flag.parent.mkdir(parents=True, exist_ok=True)
+    stop_flag.write_text(str(int(time.time())), encoding="utf-8")
+    if was_desired:
+        sessions.pop(username, None)
+        _save_sessions(sessions)
+    from TwitchChannelPointsMiner.platform.twitch_gql import invalidate_twitch
+
+    invalidate_twitch(username)
+    time.sleep(2.0)
+    if was_desired:
+        return start_sessions([username])
+    return {"started": [], "skipped": [{"username": username, "reason": "not_in_desired"}]}

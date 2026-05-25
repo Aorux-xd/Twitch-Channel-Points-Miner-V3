@@ -2,7 +2,7 @@
 
 > **Полная документация:** [README.md](./README.md) · [CHANGELOG.md](./CHANGELOG.md)
 
-## Architecture (V3.2)
+## Architecture (V3.3)
 
 | Layer | Path | Role |
 |-------|------|------|
@@ -49,21 +49,23 @@ Optional: run multi runner manually (panel starts it automatically):
 ./venv/bin/python multi_session_runner.py
 ```
 
-## Migration to V3.2
+## Migration to V3.3
 
-From **V3.1** or older (screen per bot):
+From **V3.2**:
 
-1. Pull code and rebuild UI.
-2. Stop legacy screens and any old multi runner process.
-3. Start bots from the panel (starts `multi_session_runner` if needed).
-4. **Аккаунты** → **переавторизовать** if chat shows `msg_rejected` or `WRONG_ACCOUNT`.
-5. Debug: `GET /api/sessions/debug`, logs under `logs/sessions/`.
+1. Pull + `cd ui && npm run build`
+2. Restart API and multi runner (panel start is OK)
+3. Review `config/settings.json` (replaces `rate_limits.json` + hardcoded TTLs)
+4. Debug: `GET /api/sessions/debug` (`worker_details`, heartbeat)
+5. Chat `WRONG_ACCOUNT` → re-auth that bot only (auto single restart)
+
+From **V3.1** or older (screen per bot): see [CHANGELOG.md](./CHANGELOG.md) V3.2 migration, then steps above.
 
 ## API (short)
 
-- `GET /api/health` — `version: 3.2.0`
-- `GET /api/system` — CPU/RAM + `multi_session` stats
-- `GET /api/sessions/debug` — desired vs running workers
+- `GET /api/health` — `version: 3.3.0`
+- `GET /api/system` — CPU/RAM + `bot_resources` + multi runner
+- `GET /api/sessions/debug` — desired vs workers + `worker_details`
 - `GET|POST|DELETE /api/streamers`
 - `GET|POST /api/accounts` — JSON config
 - `POST /api/sessions/start|stop|restart`
@@ -76,4 +78,4 @@ From **V3.1** or older (screen per bot):
 - Production runner: `multi_session_runner.py` only.
 - Single-bot debug: `python multi_session_runner.py --single USERNAME`
 - GQL hash overrides: `var/gql_hashes.json`
-- Rate limits: `config/rate_limits.json`
+- Settings: `config/settings.json` (rate limits, cache TTL, runner)
