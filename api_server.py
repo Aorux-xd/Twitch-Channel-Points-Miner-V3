@@ -88,7 +88,7 @@ def create_app():
         return jsonify(
             {
                 "status": "ok",
-                "version": "3.3.0",
+                "version": "3.4.0",
                 "twitch_online": twitch_network_ok(),
             }
         )
@@ -132,6 +132,9 @@ def create_app():
                 mgr_proc = psutil.Process(mgr_pid)
             except Exception:
                 mgr_proc = None
+        from TwitchChannelPointsMiner.platform.sessions import runner_health_status
+
+        health = runner_health_status()
         return jsonify(
             {
                 "cpu": f"{cpu_pct:.1f}%",
@@ -144,7 +147,8 @@ def create_app():
                 "disk_percent": round(disk.percent, 1),
                 "uptime": f"{uptime_s // 86400}d {(uptime_s % 86400) // 3600}h {(uptime_s % 3600) // 60}m",
                 "uptime_seconds": uptime_s,
-                "status": "Healthy",
+                "status": health,
+                "runner_health": health,
                 "active_sessions": len(desired),
                 "active_workers": len(active),
                 "multi_session": runner,
@@ -160,7 +164,7 @@ def create_app():
                 "hostname": platform.node(),
                 "os_name": platform.system(),
                 "twitch_online": twitch_network_ok(),
-                "api_version": "3.3.0",
+                "api_version": "3.4.0",
             }
         )
 
@@ -389,7 +393,7 @@ def create_app():
         streamer = str(request.args.get("streamer") or "").strip().lower()
         if not streamer:
             return jsonify({"error": "streamer is required"}), 400
-        limit = min(int(request.args.get("limit") or 100), 400)
+        limit = min(int(request.args.get("limit") or 150), 400)
         from TwitchChannelPointsMiner.platform.chat_hub import get_chat_messages
 
         data = get_chat_messages(streamer, limit=limit)

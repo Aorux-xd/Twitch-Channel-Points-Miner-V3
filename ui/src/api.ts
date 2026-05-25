@@ -15,6 +15,9 @@ export type Account = {
   has_cookie: boolean;
   pid?: number;
   startedAt?: number;
+  auth_hint?: 'ok' | 'dead' | 'degraded';
+  reconcile_error?: string;
+  desired?: boolean;
 };
 
 export type AccountField = {

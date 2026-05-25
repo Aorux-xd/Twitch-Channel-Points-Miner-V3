@@ -3,6 +3,7 @@ import { MessageSquare, Send, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { fetchJson, type Account, type Streamer } from '../api';
 import { CustomSelect } from './CustomSelect';
+import { DeviceAuthModal } from './DeviceAuthModal';
 import { chatDebug, chatError, chatWarn } from '../lib/chatDebug';
 import { authHeaders, clearPanelToken } from '../lib/auth';
 
@@ -122,6 +123,8 @@ export function ChatView() {
   const [lastDebug, setLastDebug] = useState<ChatDebugInfo | null>(null);
   const [readerAccount, setReaderAccount] = useState<string | null>(null);
   const [wrongAccountHint, setWrongAccountHint] = useState<string | null>(null);
+  const [reauthTarget, setReauthTarget] = useState<string | null>(null);
+  const [reauthOpen, setReauthOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pollCountRef = useRef(0);
 
@@ -295,11 +298,14 @@ export function ChatView() {
       const failed = (data.results || []).filter((r) => !r.ok);
       const wrongAccount = failed.find((r) => r.code === 'WRONG_ACCOUNT');
       if (wrongAccount) {
+        setReauthTarget(wrongAccount.account);
         setWrongAccountHint(
-          `${wrongAccount.account}: cookie не совпадает — переавторизуйте бота в «Аккаунты»`
+          `${wrongAccount.account}: WRONG_ACCOUNT — cookie не совпадает с токеном`
         );
       } else {
         setWrongAccountHint(null);
+        setReauthTarget(null);
+        setReauthOpen(false);
       }
 
       if (data.ok) {
@@ -366,16 +372,47 @@ export function ChatView() {
       </div>
 
       {wrongAccountHint && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm font-mono lowercase text-amber-300">
-          {wrongAccountHint}
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm font-mono lowercase text-amber-300 flex flex-wrap items-center gap-3">
+          <span>{wrongAccountHint}</span>
+          {reauthTarget && (
+            <button
+              type="button"
+              className="px-3 py-1 rounded-lg border border-amber-400/50 hover:bg-amber-500/20"
+              onClick={() => setReauthOpen(true)}
+            >
+              переавторизовать {reauthTarget}
+            </button>
+          )}
           <button
             type="button"
-            className="ml-3 underline hover:text-white"
-            onClick={() => setWrongAccountHint(null)}
+            className="underline hover:text-white"
+            onClick={() => {
+              setWrongAccountHint(null);
+              setReauthTarget(null);
+              setReauthOpen(false);
+            }}
           >
             скрыть
           </button>
         </div>
+      )}
+
+      {reauthTarget && (
+        <DeviceAuthModal
+          username={reauthTarget}
+          isOpen={reauthOpen}
+          force
+          onClose={() => {
+            setReauthOpen(false);
+            setReauthTarget(null);
+          }}
+          onComplete={() => {
+            setReauthOpen(false);
+            setReauthTarget(null);
+            setWrongAccountHint(null);
+            void pollMessages('after-reauth');
+          }}
+        />
       )}
 
       <div className="rounded-[24px] border border-border bg-card-bg flex flex-col h-[calc(100vh-280px)] min-h-[420px] overflow-hidden">

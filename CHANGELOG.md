@@ -1,5 +1,34 @@
 # Changelog
 
+## [3.4.0] — 2026-05-25
+
+### P1 — Production-ready multi-session
+
+- **Reconciler:** `RLock`, atomic `var/sessions.json` (`sessions_io.py`), max **3** concurrent restarts, error history (5), watchdog + runner crash recovery (3×).
+- **Shutdown:** SIGINT/SIGTERM/SIGQUIT/SIGABRT, `miner.end()`, chat queue + GQL pool drain, final `multi_session_state.json`.
+- **GQL:** единый `GQLClient` (pool + `shutdown_gql_clients`), timeout из `settings.json`.
+
+### P2 — Chat, monitoring, auth
+
+- Чат: dedupe исходящих, буфер **150**, кнопка «переавторизовать» при `WRONG_ACCOUNT`.
+- `/api/sessions/debug` — uptime, restarts, `error_history`, `runner_health`.
+- `/api/system` — `runner_health` (Healthy / Degraded / Stopped), per-bot resources.
+- Аккаунты: `auth_hint` (ok / dead / degraded).
+
+### P3 — Cleanup & config
+
+- Единый `config/settings.json` (runner, gql, chat, logging, rotation **5×5 MB**).
+- UI: индикатор runner в шапке.
+
+### Migration V3.3 → V3.4
+
+1. `git pull` + `cd ui && npm run build`
+2. Проверить/обновить `config/settings.json`
+3. Перезапустить `api_server` и `multi_session_runner`
+4. `GET /api/sessions/debug` — `runner_health: Healthy`
+
+---
+
 ## [3.3.0] — 2026-05-25
 
 ### P1 — Multi-session stability

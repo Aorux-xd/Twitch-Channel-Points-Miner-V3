@@ -103,15 +103,40 @@ def accounts_with_cookies(session: str | None = None) -> list[str]:
     return []
 
 
-def list_accounts(running: set[str] | None = None) -> list[dict]:
+def _auth_hint(username: str, reconcile_errors: dict[str, str]) -> str:
+    """ok | dead | degraded — for UI highlighting."""
+    err = reconcile_errors.get(username)
+    if not err:
+        return "ok"
+    if err in ("missing_cookie", "missing_json_config"):
+        return "dead"
+    if "max_retries" in err or err in ("restart_backoff_or_max_retries",):
+        return "degraded"
+    return "degraded"
+
+
+def list_accounts(
+    running: set[str] | None = None,
+    reconcile_errors: dict[str, str] | None = None,
+) -> list[dict]:
     ensure_dirs()
     running = running or set()
+    if reconcile_errors is None:
+        try:
+            from TwitchChannelPointsMiner.platform.multi_session_manager import (
+                get_runtime_state,
+            )
+
+            reconcile_errors = get_runtime_state().get("reconcile_errors") or {}
+        except Exception:
+            reconcile_errors = {}
     accounts = []
     for username in sorted(_all_usernames()):
         from TwitchChannelPointsMiner.platform.account_store import get_account_config
 
         cookie = COOKIES_DIR / f"{username}.pkl"
         has_config = get_account_config(username) is not None
+        hint = _auth_hint(username, reconcile_errors)
         accounts.append(
             {
                 "username": username,
@@ -119,6 +144,8 @@ def list_accounts(running: set[str] | None = None) -> list[dict]:
                 "has_config": has_config,
                 "has_cookie": cookie.exists(),
                 "status": "Active" if username in running else "Offline",
+                "auth_hint": hint,
+                "reconcile_error": reconcile_errors.get(username),
             }
         )
     return accounts

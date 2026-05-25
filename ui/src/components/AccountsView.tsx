@@ -133,7 +133,14 @@ export function AccountsView() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.05 }}
-            className="p-6 rounded-[24px] bg-card-bg border border-border hover:border-lime transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_10px_40px_-10px_rgba(204,255,0,0.1)] group relative overflow-hidden"
+            className={cn(
+              'p-6 rounded-[24px] bg-card-bg border transition-all duration-300 hover:-translate-y-1 group relative overflow-hidden',
+              acc.auth_hint === 'dead'
+                ? 'border-red-500/50 hover:border-red-400'
+                : acc.auth_hint === 'degraded'
+                  ? 'border-amber-500/40 hover:border-amber-400'
+                  : 'border-border hover:border-lime hover:shadow-[0_10px_40px_-10px_rgba(204,255,0,0.1)]'
+            )}
           >
             <div className="flex items-center justify-between mb-4 relative z-10">
               <div className="w-12 h-12 rounded-xl bg-dashboard-bg flex items-center justify-center border border-border">
@@ -148,6 +155,11 @@ export function AccountsView() {
             </div>
 
             <h3 className="font-bold text-lg mb-1 truncate lowercase relative z-10">{acc.username}</h3>
+            {acc.auth_hint && acc.auth_hint !== 'ok' && (
+              <p className="text-[10px] font-mono text-amber-400 mb-2 relative z-10">
+                {acc.auth_hint === 'dead' ? 'нет cookie/конфига' : acc.reconcile_error || 'ошибка сессии'}
+              </p>
+            )}
             <div className="flex items-center gap-2 text-text-muted mb-4 relative z-10 font-mono text-xs flex-wrap">
               <span className="truncate">
                 {acc.has_config === false ? 'нет в accounts.json' : acc.file || '—'}

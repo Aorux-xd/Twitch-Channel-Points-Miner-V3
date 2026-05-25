@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Единственная точка запуска ботов (V3.3).
+Единственная точка запуска ботов (V3.4).
 
   python multi_session_runner.py              # reconcile loop (production)
   python multi_session_runner.py --single USER  # отладка одного бота
@@ -49,8 +49,23 @@ def main() -> int:
     args = parser.parse_args()
     if args.single:
         return run_single(args.single.strip())
-    MultiSessionManager().run_forever()
-    return 0
+    crashes = 0
+    while crashes < 3:
+        try:
+            MultiSessionManager().run_forever()
+            return 0
+        except Exception:
+            crashes += 1
+            logging.getLogger(__name__).exception(
+                "Multi-session runner crashed (%s/3), restarting in 10s",
+                crashes,
+            )
+            if crashes >= 3:
+                return 1
+            import time
+
+            time.sleep(10)
+    return 1
 
 
 if __name__ == "__main__":

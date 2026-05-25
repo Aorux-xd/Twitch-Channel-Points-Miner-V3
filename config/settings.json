@@ -13,13 +13,29 @@
   "runner": {
     "reconcile_interval_sec": 5,
     "max_restart_attempts": 3,
+    "max_concurrent_restarts": 3,
     "restart_backoff_sec": [5, 15, 45],
     "heartbeat_interval_sec": 10,
-    "status_interval_sec": 15
+    "status_interval_sec": 15,
+    "watchdog_interval_sec": 30,
+    "error_history_size": 5
   },
   "background_refresh_interval_sec": 90,
   "log_rotation": {
     "max_bytes": 5242880,
-    "backup_count": 3
+    "backup_count": 5
+  },
+  "logging": {
+    "manager_level": "INFO",
+    "bot_level": "INFO"
+  },
+  "gql": {
+    "request_timeout_sec": 20,
+    "persisted_fallback": true
+  },
+  "chat": {
+    "buffer_limit": 150,
+    "bulk_queue_max": 32,
+    "dedupe_window_sec": 3.0
   }
 }

@@ -489,6 +489,7 @@ class ChatHub:
         self._messages: dict[str, deque[ChatMessage]] = {}
         self._readers: dict[str, _ReaderThread] = {}
         self._reader_irc: dict[str, _PanelIRC] = {}
+        self._outbound_recent: dict[str, float] = {}
         self._bulk_queue: queue.Queue[_BulkSendJob | None] = queue.Queue(
             maxsize=BULK_QUEUE_MAX
         )
@@ -496,8 +497,23 @@ class ChatHub:
             target=self._bulk_send_worker, name="chat-bulk-send", daemon=True
         ).start()
 
+    def _is_duplicate_outbound(self, account: str, text: str) -> bool:
+        key = f"{account}:{text.strip()}"
+        now = time.time()
+        with self._lock:
+            last = self._outbound_recent.get(key, 0.0)
+            if now - last < DEDUPE_WINDOW_SEC:
+                return True
+            self._outbound_recent[key] = now
+            if len(self._outbound_recent) > 500:
+                cutoff = now - DEDUPE_WINDOW_SEC * 2
+                self._outbound_recent = {
+                    k: v for k, v in self._outbound_recent.items() if v >= cutoff
+                }
+        return False
+
     def _bulk_send_worker(self) -> None:
-        while True:
+        while not _hub_shutdown.is_set():
             job = self._bulk_queue.get()
             if job is None:
                 break
@@ -695,6 +711,14 @@ class ChatHub:
         """Send from one bot: Helix first, IRC+echo fallback when needed."""
         from TwitchChannelPointsMiner.platform.rate_limit import CHAT_SEND_LIMITER
 
+        if self._is_duplicate_outbound(account, text):
+            return {
+                "account": account,
+                "ok": False,
+                "error": "дубликат отправки — подождите несколько секунд",
+                "code": "DEDUPED",
+            }
+
         CHAT_SEND_LIMITER.wait(f"chat:{account}")
 
         helix = _helix_send(account, streamer, text)
@@ -828,6 +852,26 @@ class ChatHub:
 
 
 _hub = ChatHub()
+_hub_shutdown = threading.Event()
+
+
+def shutdown_chat_hub() -> None:
+    """Drain bulk send queue and stop reader threads on runner shutdown."""
+    _hub_shutdown.set()
+    try:
+        _hub._bulk_queue.put_nowait(None)
+    except queue.Full:
+        pass
+    with _hub._lock:
+        readers = list(_hub._readers.items())
+    for streamer, thread in readers:
+        try:
+            thread.stop()
+        except Exception:
+            pass
+    with _hub._lock:
+        _hub._readers.clear()
+        _hub._reader_irc.clear()
 
 
 def _chat_status(streamer: str) -> dict:

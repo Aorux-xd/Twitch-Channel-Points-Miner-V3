@@ -15,6 +15,7 @@ import requests
 from TwitchChannelPointsMiner.constants import BROWSER_CLIENT_ID, CLIENT_ID
 from TwitchChannelPointsMiner.platform.paths import VAR_DIR, ensure_dirs
 from TwitchChannelPointsMiner.platform.rate_limit import GQL_LIMITER
+from TwitchChannelPointsMiner.platform.settings import get_section
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,15 @@ def invalidate_gql_clients(twitch_client=None) -> None:
             _gql_client_pool.pop(k, None)
 
 
+def shutdown_gql_clients() -> None:
+    """Clear pooled GQL clients on multi-session runner shutdown."""
+    invalidate_gql_clients(None)
+
+
+_gql_settings = get_section("gql")
+GQL_REQUEST_TIMEOUT = int(_gql_settings.get("request_timeout_sec", 20))
+
+
 class GQLClient:
     """POST gql.twitch.tv with persisted-query fallback to full query text."""
 
@@ -206,8 +216,9 @@ class GQLClient:
         query: str | None = None,
         body: dict[str, Any] | None = None,
         use_persisted: bool = True,
-        timeout: int = 20,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
+        timeout = timeout if timeout is not None else GQL_REQUEST_TIMEOUT
         GQL_LIMITER.wait(f"gql:{operation_name}")
 
         if body is not None:

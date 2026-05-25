@@ -1,10 +1,15 @@
-# Twitch Channel Points Miner — FullStack Dashboard
+# Twitch Channel Points Miner
+
+> **Production dashboard (V3.4):** см. [FULLSTACK_README.md](./FULLSTACK_README.md) — multi-session, API, миграция, troubleshooting.  
+> Запуск ботов: `multi_session_runner.py` + `config/accounts.json` (не screen / `session_runner.py`).
+
+# Twitch Channel Points Miner (classic) — FullStack Dashboard
 
 Полноценная панель управления для автоматического фарма **Channel Points** на Twitch: Python-майнер, REST API на Flask, React-дашборд и control plane `TwitchChannelPointsMiner/platform/`.
 
 > Краткая шпаргалка по запуску также в [FULLSTACK_README.md](./FULLSTACK_README.md).
 
-**Версия API:** `2.1.0` (см. `GET /api/health`)
+**Версия API:** `3.4.0` (см. `GET /api/health`)
 
 ---
 

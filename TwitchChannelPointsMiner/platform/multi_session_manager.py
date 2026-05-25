@@ -27,6 +27,7 @@ from TwitchChannelPointsMiner.platform.paths import (
     VAR_DIR,
     ensure_dirs,
 )
+from TwitchChannelPointsMiner.platform.sessions_io import read_sessions_file
 from TwitchChannelPointsMiner.platform.settings import get_section
 from TwitchChannelPointsMiner.platform.streamers_store import streamers_for_miner
 from TwitchChannelPointsMiner.platform.twitch_gql import invalidate_twitch
@@ -46,10 +47,16 @@ RECONCILE_INTERVAL_SEC = float(_runner_settings.get("reconcile_interval_sec", 5)
 STATUS_INTERVAL_SEC = float(_runner_settings.get("status_interval_sec", 15))
 HEARTBEAT_INTERVAL_SEC = float(_runner_settings.get("heartbeat_interval_sec", 10))
 MAX_RESTART_ATTEMPTS = int(_runner_settings.get("max_restart_attempts", 3))
+_MAX_CONCURRENT_RESTARTS = int(_runner_settings.get("max_concurrent_restarts", 3))
 _RESTART_BACKOFF = list(_runner_settings.get("restart_backoff_sec") or [5, 15, 45])
+_WATCHDOG_INTERVAL_SEC = float(_runner_settings.get("watchdog_interval_sec", 30))
+_ERROR_HISTORY_SIZE = int(_runner_settings.get("error_history_size", 5))
 
+_log_levels = get_section("logging")
 LOG_MAX_BYTES = int(_log_rotation.get("max_bytes", 5_242_880))
-LOG_BACKUP_COUNT = int(_log_rotation.get("backup_count", 3))
+LOG_BACKUP_COUNT = int(_log_rotation.get("backup_count", 5))
+_MANAGER_LOG_LEVEL = getattr(logging, str(_log_levels.get("manager_level", "INFO")).upper(), logging.INFO)
+_BOT_LOG_LEVEL = getattr(logging, str(_log_levels.get("bot_level", "INFO")).upper(), logging.INFO)
 
 
 class WorkerState(str, Enum):
@@ -80,15 +87,8 @@ class _AccountWorker:
 
 
 def read_desired_sessions() -> dict[str, dict]:
-    """Desired bots from var/sessions.json (never cleared by manager death)."""
-    ensure_dirs()
-    if not SESSIONS_FILE.exists():
-        return {}
-    try:
-        data = json.loads(SESSIONS_FILE.read_text(encoding="utf-8"))
-        return dict(data.get("sessions") or {})
-    except Exception:
-        return {}
+    """Desired bots from var/sessions.json (atomic read)."""
+    return read_sessions_file()
 
 
 def notify_sessions_changed() -> None:
@@ -133,10 +133,11 @@ def _setup_runner_logging() -> None:
     root = logging.getLogger()
     if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
         logging.basicConfig(
-            level=logging.INFO,
+            level=_MANAGER_LOG_LEVEL,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%H:%M:%S",
         )
+    root.setLevel(_MANAGER_LOG_LEVEL)
     manager_log = LOGS_DIR / "multi_session_runner.log"
     if not any(
         getattr(h, "baseFilename", None) == str(manager_log) for h in root.handlers
@@ -171,9 +172,35 @@ def _bot_logger(username: str) -> logging.Logger:
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
         bot.addHandler(fh)
-        bot.setLevel(logging.INFO)
+        bot.setLevel(_BOT_LOG_LEVEL)
         bot.propagate = True
     return bot
+
+
+class _RunnerWatchdog(threading.Thread):
+    """Force reconcile if loop stalls; log runner health."""
+
+    def __init__(self, manager: "MultiSessionManager") -> None:
+        super().__init__(daemon=True, name="runner-watchdog")
+        self._manager = manager
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        stale_threshold = RECONCILE_INTERVAL_SEC * 3
+        while not self._stop.is_set() and not self._manager._shutdown.is_set():
+            self._stop.wait(_WATCHDOG_INTERVAL_SEC)
+            if self._manager._shutdown.is_set():
+                break
+            last = self._manager._last_reconcile_at
+            if last and time.time() - last > stale_threshold:
+                logger.warning(
+                    "Watchdog: reconcile stale (%.0fs) — forcing",
+                    time.time() - last,
+                )
+                self._manager._reconcile_now.set()
 
 
 class _SessionsFileWatcher(threading.Thread):
@@ -210,13 +237,17 @@ class _SessionsFileWatcher(threading.Thread):
 class MultiSessionManager:
     def __init__(self) -> None:
         self._workers: dict[str, _AccountWorker] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._shutdown = threading.Event()
         self._reconcile_now = threading.Event()
         self._streamers: list = []
         self._reconcile_errors: dict[str, str] = {}
         self._restart_meta: dict[str, _RestartMeta] = {}
+        self._error_history: dict[str, list[dict]] = {}
         self._watcher: _SessionsFileWatcher | None = None
+        self._watchdog: _RunnerWatchdog | None = None
+        self._last_reconcile_at: float = 0.0
+        self._restart_sem = threading.Semaphore(_MAX_CONCURRENT_RESTARTS)
 
     def _account_ready(self, username: str) -> str | None:
         if not get_account_config(username):
@@ -229,7 +260,17 @@ class MultiSessionManager:
         idx = min(max(attempt - 1, 0), len(_RESTART_BACKOFF) - 1)
         return float(_RESTART_BACKOFF[idx])
 
+    def _append_error_history(self, username: str, error: str, source: str = "worker") -> None:
+        entry = {"ts": int(time.time()), "error": error, "source": source}
+        with self._lock:
+            hist = self._error_history.setdefault(username, [])
+            hist.append(entry)
+            if len(hist) > _ERROR_HISTORY_SIZE:
+                del hist[: -_ERROR_HISTORY_SIZE]
+
     def _record_worker_failure(self, username: str, error: str | None) -> None:
+        err = error or "unknown_error"
+        self._append_error_history(username, err)
         meta = self._restart_meta.setdefault(username, _RestartMeta())
         meta.attempts += 1
         meta.last_error = error
@@ -237,7 +278,8 @@ class MultiSessionManager:
             meta.next_restart_at = time.time() + self._backoff_delay(meta.attempts)
         else:
             meta.next_restart_at = 0.0
-            self._reconcile_errors[username] = error or "max_retries_exceeded"
+            if meta.attempts >= MAX_RESTART_ATTEMPTS:
+                self._reconcile_errors[username] = err
 
     def _clear_restart_meta(self, username: str) -> None:
         self._restart_meta.pop(username, None)
@@ -287,6 +329,7 @@ class MultiSessionManager:
                 }
                 for u, m in self._restart_meta.items()
             }
+            error_history = {u: list(h) for u, h in self._error_history.items()}
         desired = read_desired_sessions()
         try:
             import psutil
@@ -310,6 +353,8 @@ class MultiSessionManager:
             "workers": workers,
             "reconcile_errors": errors,
             "restart_meta": restart_meta,
+            "error_history": error_history,
+            "last_reconcile_at": int(self._last_reconcile_at),
             "manager_memory_mb": mem_mb,
             "manager_cpu_percent": cpu_pct,
         }
@@ -555,9 +600,11 @@ class MultiSessionManager:
         actions: dict[str, str] = {}
 
         for username in sorted(desired_names - running):
-            err = self.start_account(username)
+            with self._restart_sem:
+                err = self.start_account(username)
             if err:
                 actions[username] = f"start_failed:{err}"
+                self._append_error_history(username, err, source="reconcile")
             else:
                 actions[username] = "started"
 
@@ -575,6 +622,14 @@ class MultiSessionManager:
             names = list(self._workers.keys())
         for name in names:
             self.stop_account(name)
+        try:
+            from TwitchChannelPointsMiner.platform.chat_hub import shutdown_chat_hub
+            from TwitchChannelPointsMiner.platform.gql_queries import shutdown_gql_clients
+
+            shutdown_chat_hub()
+            shutdown_gql_clients()
+        except Exception as e:
+            logger.debug("auxiliary shutdown: %s", e)
         self._publish_state()
 
     def run_forever(self) -> None:
@@ -591,14 +646,16 @@ class MultiSessionManager:
             self._shutdown.set()
             self._reconcile_now.set()
 
-        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGQUIT):
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGQUIT, signal.SIGABRT):
             try:
                 signal.signal(sig, handle_signal)
-            except (ValueError, OSError):
+            except (ValueError, OSError, AttributeError):
                 pass
 
         self._watcher = _SessionsFileWatcher(on_change=self._reconcile_now.set)
         self._watcher.start()
+        self._watchdog = _RunnerWatchdog(self)
+        self._watchdog.start()
 
         log_event("info", "session", "Multi-session runner запущен (reconcile loop)")
         logger.info(
@@ -614,9 +671,12 @@ class MultiSessionManager:
                     break
                 desired = read_desired_sessions()
                 actions = self.reconcile(desired)
+                self._last_reconcile_at = time.time()
                 if actions:
                     logger.info("reconcile: %s", actions)
         finally:
+            if self._watchdog:
+                self._watchdog.stop()
             if self._watcher:
                 self._watcher.stop()
             self.shutdown_all()
@@ -648,6 +708,8 @@ class MultiSessionManager:
                 for u, w in self._workers.items()
             }
         desired = read_desired_sessions()
+        with self._lock:
+            error_history = {u: list(h) for u, h in self._error_history.items()}
         return {
             "manager_pid": manager_pid_running() or os.getpid(),
             "desired": desired,
@@ -657,6 +719,8 @@ class MultiSessionManager:
                 u: {"attempts": m.attempts, "next_restart_at": m.next_restart_at}
                 for u, m in self._restart_meta.items()
             },
+            "error_history": error_history,
+            "last_reconcile_at": int(self._last_reconcile_at),
         }
 
 
@@ -690,6 +754,8 @@ def worker_resource_stats(username: str, runtime: dict) -> dict:
     mgr_mem = runtime.get("manager_memory_mb")
     running = int(runtime.get("running_count") or 1) or 1
     est_mem = round(mgr_mem / running, 1) if mgr_mem else None
+    restart = (runtime.get("restart_meta") or {}).get(username) or {}
+    errors = (runtime.get("error_history") or {}).get(username) or []
     return {
         "uptime_sec": uptime,
         "last_error": meta.get("last_error"),
@@ -698,4 +764,7 @@ def worker_resource_stats(username: str, runtime: dict) -> dict:
         "state": meta.get("state"),
         "thread_alive": meta.get("thread_alive"),
         "memory_mb_est": est_mem,
+        "restart_attempts": restart.get("attempts"),
+        "next_restart_at": restart.get("next_restart_at"),
+        "error_history": errors[-5:],
     }

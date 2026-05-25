@@ -1,5 +1,6 @@
 import React from 'react';
 import { Bell } from 'lucide-react';
+import { RunnerHealthBadge } from './RunnerHealthBadge';
 
 export function Header() {
   return (
@@ -11,6 +12,7 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-4">
+        <RunnerHealthBadge />
         <button
           type="button"
           className="p-2.5 rounded-xl border border-border hover:bg-dashboard-bg transition-colors relative"

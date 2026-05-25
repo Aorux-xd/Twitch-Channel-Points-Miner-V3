@@ -18,8 +18,11 @@ from TwitchChannelPointsMiner.platform.multi_session_manager import (
     get_runtime_state,
     manager_pid_running,
     notify_sessions_changed,
-    read_desired_sessions,
     worker_resource_stats,
+)
+from TwitchChannelPointsMiner.platform.sessions_io import (
+    read_sessions_file,
+    write_sessions_file,
 )
 from TwitchChannelPointsMiner.platform.paths import (
     COOKIES_DIR,
@@ -39,10 +42,6 @@ def _python_executable() -> str:
     if venv_py.is_file():
         return str(venv_py)
     return sys.executable
-
-
-def _write_json(path: Path, data) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _kill_pid(pid: int) -> None:
@@ -68,7 +67,7 @@ def _kill_pid(pid: int) -> None:
 
 def load_sessions() -> dict:
     """Desired bots (what the panel asked to run). Not cleared when runner restarts."""
-    return read_desired_sessions()
+    return read_sessions_file()
 
 
 def active_worker_usernames() -> set[str]:
@@ -83,9 +82,27 @@ def active_worker_usernames() -> set[str]:
     }
 
 
+def runner_health_status() -> str:
+    """Healthy | Degraded | Stopped for UI."""
+    pid = manager_pid_running()
+    if not pid:
+        desired = read_sessions_file()
+        return "Stopped" if desired else "Stopped"
+    runtime = get_runtime_state()
+    errors = runtime.get("reconcile_errors") or {}
+    stale_workers = [
+        u
+        for u, m in (runtime.get("workers") or {}).items()
+        if m.get("stale") or m.get("state") == "error"
+    ]
+    if errors or stale_workers:
+        return "Degraded"
+    return "Healthy"
+
+
 def sessions_debug() -> dict:
     """Full picture for /api/sessions/debug."""
-    desired = read_desired_sessions()
+    desired = read_sessions_file()
     runtime = get_runtime_state()
     active = active_worker_usernames()
     worker_details = {
@@ -94,6 +111,7 @@ def sessions_debug() -> dict:
     return {
         "manager_pid": manager_pid_running(),
         "manager_alive": manager_pid_running() is not None,
+        "runner_health": runner_health_status(),
         "desired_sessions": desired,
         "desired_count": len(desired),
         "active_workers": sorted(active),
@@ -102,6 +120,9 @@ def sessions_debug() -> dict:
         "orphan_running": sorted(active - set(desired)),
         "runtime": runtime,
         "worker_details": worker_details,
+        "error_history": runtime.get("error_history") or {},
+        "last_reconcile_at": runtime.get("last_reconcile_at"),
+        "restart_meta": runtime.get("restart_meta") or {},
     }
 
 
@@ -110,14 +131,18 @@ def multi_runner_system_stats() -> dict:
     return {
         "multi_session_runner_alive": manager_pid_running() is not None,
         "multi_session_pid": manager_pid_running(),
+        "runner_health": runner_health_status(),
         "desired_bots": state.get("desired_count", 0),
         "running_bots": state.get("running_count", 0),
         "reconcile_errors": state.get("reconcile_errors") or {},
+        "last_reconcile_at": state.get("last_reconcile_at"),
+        "manager_memory_mb": state.get("manager_memory_mb"),
+        "manager_cpu_percent": state.get("manager_cpu_percent"),
     }
 
 
 def _save_sessions(sessions: dict) -> None:
-    _write_json(SESSIONS_FILE, {"sessions": sessions})
+    write_sessions_file(sessions)
     notify_sessions_changed()
 
 
@@ -168,7 +193,7 @@ def start_sessions(usernames: list[str]) -> dict:
             ],
         }
 
-    sessions = read_desired_sessions()
+    sessions = read_sessions_file()
     started = []
     skipped = []
 
@@ -213,7 +238,7 @@ def stop_sessions(usernames: list[str]) -> dict:
     from TwitchChannelPointsMiner.platform.twitch_gql import invalidate_twitch
 
     usernames = [str(u).strip() for u in usernames if str(u).strip()]
-    sessions = read_desired_sessions()
+    sessions = read_sessions_file()
     stopped = []
     missing = []
 
@@ -253,7 +278,7 @@ def restart_single_session(username: str) -> dict:
     username = username.strip()
     if not username:
         return {"started": [], "skipped": [{"username": "", "reason": "empty_username"}]}
-    sessions = read_desired_sessions()
+    sessions = read_sessions_file()
     was_desired = username in sessions
     stop_flag = STATUS_DIR / f"{username}.stop"
     stop_flag.parent.mkdir(parents=True, exist_ok=True)
