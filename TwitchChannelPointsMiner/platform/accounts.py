@@ -75,13 +75,10 @@ def account_schema() -> list[dict[str, Any]]:
 
 
 def _all_usernames() -> set[str]:
-    """Usernames from JSON config, legacy .py stubs, and/or cookies."""
+    """Usernames from config/accounts.json and/or cookies."""
     from TwitchChannelPointsMiner.platform.account_store import list_configured_usernames
 
     names: set[str] = set(list_configured_usernames())
-    for py in ACCOUNTS_DIR.glob("*.py"):
-        if not py.name.startswith("_"):
-            names.add(py.stem)
     for pkl in COOKIES_DIR.glob("*.pkl"):
         names.add(pkl.stem)
     return names
@@ -113,15 +110,12 @@ def list_accounts(running: set[str] | None = None) -> list[dict]:
     for username in sorted(_all_usernames()):
         from TwitchChannelPointsMiner.platform.account_store import get_account_config
 
-        py = ACCOUNTS_DIR / f"{username}.py"
         cookie = COOKIES_DIR / f"{username}.pkl"
-        has_json = get_account_config(username) is not None
-        has_py = py.exists()
-        has_config = has_json or has_py
+        has_config = get_account_config(username) is not None
         accounts.append(
             {
                 "username": username,
-                "file": "config/accounts.json" if has_json else (py.name if has_py else None),
+                "file": "config/accounts.json" if has_config else None,
                 "has_config": has_config,
                 "has_cookie": cookie.exists(),
                 "status": "Active" if username in running else "Offline",
@@ -199,9 +193,6 @@ def delete_account(username: str, remove_cookie: bool = True):
 
     stop_sessions([username])
     delete_account_config(username)
-    path = ACCOUNTS_DIR / f"{username}.py"
-    if path.exists():
-        path.unlink()
     cookie = COOKIES_DIR / f"{username}.pkl"
     if remove_cookie and cookie.exists():
         cookie.unlink()

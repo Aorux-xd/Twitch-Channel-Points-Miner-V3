@@ -112,6 +112,9 @@ export function ChatView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendStatus, setSendStatus] = useState<
+    'idle' | 'sending' | 'sent' | 'partial' | 'failed' | 'rate_limited'
+  >('idle');
   const [error, setError] = useState<string | null>(null);
   const [lastDebug, setLastDebug] = useState<ChatDebugInfo | null>(null);
   const [readerAccount, setReaderAccount] = useState<string | null>(null);
@@ -231,6 +234,7 @@ export function ChatView() {
     });
 
     setSending(true);
+    setSendStatus('sending');
     setError(null);
 
     try {
@@ -276,6 +280,7 @@ export function ChatView() {
       if (data.ok) {
         setDraft('');
         if (data.partial) {
+          setSendStatus('partial');
           const summary = `частично: ${data.ok_count}/${data.total} отправлено`;
           const details = formatSendSummary(data);
           setError(details ? `${summary}. ${details}` : summary);
@@ -285,6 +290,7 @@ export function ChatView() {
             failed,
           });
         } else {
+          setSendStatus('sent');
           setError(null);
           chatDebug('send:success', {
             ok_count: data.ok_count,
@@ -293,6 +299,10 @@ export function ChatView() {
         }
         void pollMessages('after-send');
       } else {
+        const rateLimited = (data.results || []).some(
+          (r) => r.code === 'RATE_LIMIT' || (r.error || '').includes('too quickly')
+        );
+        setSendStatus(rateLimited ? 'rate_limited' : 'failed');
         const detail = formatSendSummary(data) || data.error || 'не удалось отправить';
         setError(detail);
         chatWarn('send:failed', {
@@ -307,6 +317,7 @@ export function ChatView() {
         msg =
           'таймаут отправки (много аккаунтов). проверьте лог api_server — часть могла уйти';
       }
+      setSendStatus('failed');
       setError(msg);
       chatError('send:exception', { message: msg, payload });
     } finally {
@@ -335,6 +346,8 @@ export function ChatView() {
             канал #{selectedStreamer || '—'}
             {readerAccount ? ` · irc reader: ${readerAccount}` : ''}
             {lastDebug?.reader_joined === false ? ' · reader не в канале (join…)' : ''}
+            {sendStatus !== 'idle' && sendStatus !== 'sent' ? ` · send: ${sendStatus}` : ''}
+            {sendStatus === 'sent' ? ' · отправлено' : ''}
             {error ? ` · ${error}` : ''}
           </p>
           {lastDebug && (

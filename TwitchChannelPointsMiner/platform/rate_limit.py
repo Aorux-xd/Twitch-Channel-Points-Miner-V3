@@ -27,3 +27,4 @@ class RateLimiter:
 # Global limiters used by panel API paths
 CHAT_SEND_LIMITER = RateLimiter(0.85)
 REDEEM_LIMITER = RateLimiter(1.0)
+GQL_LIMITER = RateLimiter(0.35)

@@ -1,89 +1,76 @@
 # Twitch Channel Points Miner — Production Dashboard
 
-> **Полная документация:** [README.md](./README.md) — структура, API, screen/VPS, **повторяющийся код**, changelog, troubleshooting.
+> **Полная документация:** [README.md](./README.md) · [CHANGELOG.md](./CHANGELOG.md)
 
-## Architecture
+## Architecture (V3.1)
 
 | Layer | Path | Role |
 |-------|------|------|
 | Python miner | `TwitchChannelPointsMiner/` | Core farming logic |
 | Control plane | `TwitchChannelPointsMiner/platform/` | Config, Twitch API, sessions, stats |
 | API | `api_server.py` | Flask REST + static UI |
-| Accounts | `config/accounts.json` | Per-bot JSON config (v3; legacy `accounts/<user>.py` still works) |
-| Factory | `platform/miner_factory.py` | Builds miner from JSON |
-| GQL | `platform/gql_queries.py` | Persisted queries + redeem/chat helpers |
-| Runner | `session_runner.py` | One entry point per bot process (`--username`) |
-| Streamers | `config/streamers.json` | Global channel list for all bots |
+| Accounts | `config/accounts.json` | Per-bot JSON config |
+| Factory | `platform/miner_factory.py` | Builds `TwitchChannelPointsMiner` from JSON |
+| GQL | `platform/gql_queries.py` | Persisted hashes + `GQLClient` |
+| Multi runner | `multi_session_runner.py` | **One OS process**, many bot threads |
+| Session state | `var/sessions.json` | Desired running bots (reconciled) |
+| Streamers | `config/streamers.json` | Global channel list |
 | UI | `ui/` | React dashboard |
-
-**Not used:** `run_panel/` (removed), sibling `Twitch-Points-UI/` (old clone).
 
 ## Data flow
 
 1. Add streamers in UI → `config/streamers.json`.
-2. Create account in UI → `config/accounts.json` (entry per bot).
-3. Start session → `screen -dmS twitchN ./venv/bin/python session_runner.py --username …` → loads account → `mine(streamers)`.
+2. Create account in UI → `config/accounts.json`.
+3. Start session → `POST /api/sessions/start` → entry in `var/sessions.json` → `multi_session_runner` starts thread for bot.
 4. Status → `var/status/<username>.json` every 15s.
-5. Platform events → `logs/platform_events.jsonl`.
-6. Dashboard points → GQL cache `var/points_cache.json`.
-7. Miner analytics JSON → `logs/analytics/<username>/` (if enabled).
+5. Stop → remove from `sessions.json` + `var/status/<user>.stop` flag.
 
 ## Run (development)
 
 ```bash
-py -m pip install -r requirements.txt
-py api_server.py
+./venv/bin/pip install -r requirements.txt
+./venv/bin/python api_server.py
 ```
 
 ```bash
 cd ui && npm install && npm run dev
 ```
 
-Open http://localhost:3000 (API proxied to :8000).
-
 ## Run (production)
 
 ```bash
 cd ui && npm run build && cd ..
-py api_server.py
+./venv/bin/python api_server.py
 ```
 
-Open http://localhost:8000
-
-## VPS screen (legacy manager.py style)
+Optional: run multi runner manually (panel starts it automatically):
 
 ```bash
-screen -dmS twitch1 ./venv/bin/python session_runner.py --username YOUR_LOGIN
-screen -ls | grep twitch
+./venv/bin/python multi_session_runner.py
 ```
 
-Panel uses the same command via `POST /api/sessions/start`. Old `miner1`…`miner14` from root `manager.py` are unrelated.
+## Migration to V3.1
 
-## VPS path migration (2026-05-24)
+If you used **V3.0 or older** (screen per bot, `accounts/*.py`):
 
-```bash
-cd /path/to/Twitch-Channel-Points-Miner-v2
-[ -d runtime ] && mv runtime var
-mkdir -p logs/analytics
-[ -d analytics ] && mv analytics/* logs/analytics/ 2>/dev/null; rmdir analytics 2>/dev/null
-```
-
-Restart `api_server.py` and miner screens after pulling.
+1. Pull code and rebuild UI.
+2. Stop all legacy screens: `for s in $(screen -ls | grep twitch | awk '{print $1}'); do screen -S "$s" -X quit; done`
+3. Start bots from the panel only.
+4. Open **Аккаунты** → **переавторизовать** for each bot (fresh TV code).
+5. Optional: remove obsolete `accounts/*.py` after confirming `config/accounts.json` has all bots.
 
 ## API (short)
 
-- `GET /api/dashboard`, `/api/active-streams`
+- `GET /api/health` — `version: 3.1.0`
 - `GET|POST|DELETE /api/streamers`
-- `GET /api/accounts/schema`, `GET|POST /api/accounts`, `POST …/restore-config`
-- `POST /api/sessions/start|stop` — `{ "accounts": ["user1"] }`
-- `GET /api/rewards`, `POST /api/activate-reward` (`text` / `textInput` для наград с вводом)
-- `GET|POST /api/chat` — IRC чат стримера
-- `GET /api/logs?username=&offset=`
+- `GET|POST /api/accounts` — JSON config
+- `POST /api/sessions/start|stop|restart`
+- `GET /api/rewards`, `POST /api/activate-reward`
+- `GET|POST /api/chat`
+- `POST /api/auth/device/start` — `{ username, force?: true }`
 
 ## Notes
 
-- **v3.0.0:** см. [CHANGELOG.md](./CHANGELOG.md) — чат, redeem GQL, JSON-аккаунты, `force` переавторизация.
-- После обновления: **Аккаунты → переавторизовать** для каждого бота (старый cookie без TV-кода не обновлялся).
-- `config/accounts.json` = конфиг ботов; legacy `accounts/*.py` опционален.
-- `run.py` = reference template; production = UI + `session_runner.py`.
-- First login: device flow → `cookies/<username>.pkl`.
+- **Do not** use one screen per bot anymore; use multi runner.
+- `session_runner.py --username X` is deprecated (single-bot debug only).
+- GQL hash overrides: `var/gql_hashes.json`

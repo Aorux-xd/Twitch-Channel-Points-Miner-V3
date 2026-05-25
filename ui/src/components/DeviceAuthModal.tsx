@@ -48,6 +48,15 @@ export function DeviceAuthModal({ username, isOpen, force = false, onClose, onCo
         if (cancelled) return;
         setStatus(data);
         if (data.status === 'complete') {
+          try {
+            await fetchJson('/api/sessions/restart', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accounts: [username] }),
+            });
+          } catch {
+            /* session may not have been running */
+          }
           onComplete();
         }
       } catch {

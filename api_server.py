@@ -85,7 +85,7 @@ def create_app():
         return jsonify(
             {
                 "status": "ok",
-                "version": "3.0.0",
+                "version": "3.1.0",
                 "twitch_online": twitch_network_ok(),
             }
         )
@@ -126,7 +126,7 @@ def create_app():
                 "hostname": platform.node(),
                 "os_name": platform.system(),
                 "twitch_online": twitch_network_ok(),
-                "api_version": "3.0.0",
+                "api_version": "3.1.0",
             }
         )
 
@@ -270,6 +270,16 @@ def create_app():
         payload = request.get_json(force=True, silent=True) or {}
         usernames = payload.get("accounts") or []
         return jsonify(stop_sessions(usernames))
+
+    @app.post("/api/sessions/restart")
+    def sessions_restart():
+        from TwitchChannelPointsMiner.platform.sessions import restart_sessions
+
+        payload = request.get_json(force=True, silent=True) or {}
+        usernames = payload.get("accounts") or []
+        if not usernames and payload.get("username"):
+            usernames = [payload.get("username")]
+        return jsonify(restart_sessions(usernames))
 
     @app.get("/api/logs")
     def logs_tail():

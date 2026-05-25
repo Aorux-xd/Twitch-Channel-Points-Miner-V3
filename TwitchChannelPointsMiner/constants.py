@@ -38,153 +38,36 @@ GITHUB_url = (
 )
 
 
+def _gql(name: str, variables=None, **extra):
+    from TwitchChannelPointsMiner.platform.gql_queries import persisted_payload
+
+    return persisted_payload(name, variables, extra=extra or None)
+
+
 class GQLOperations:
+    """Thin aliases — hashes and client live in platform/gql_queries.py (V3.1)."""
+
     url = "https://gql.twitch.tv/gql"
     integrity_url = "https://gql.twitch.tv/integrity"
-    WithIsStreamLiveQuery = {
-        "operationName": "WithIsStreamLiveQuery",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "04e46329a6786ff3a81c01c50bfa5d725902507a0deb83b0edbf7abe7a3716ea",
-            }
-        },
-    }
-    PlaybackAccessToken = {
-        "operationName": "PlaybackAccessToken",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "3093517e37e4f4cb48906155bcd894150aef92617939236d2508f3375ab732ce",
-            }
-        },
-    }
-    VideoPlayerStreamInfoOverlayChannel = {
-        "operationName": "VideoPlayerStreamInfoOverlayChannel",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "198492e0857f6aedead9665c81c5a06d67b25b58034649687124083ff288597d",
-            }
-        },
-    }
-    ClaimCommunityPoints = {
-        "operationName": "ClaimCommunityPoints",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "46aaeebe02c99afdf4fc97c7c0cba964124bf6b0af229395f1f6d1feed05b3d0",
-            }
-        },
-    }
-    CommunityMomentCallout_Claim = {
-        "operationName": "CommunityMomentCallout_Claim",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "e2d67415aead910f7f9ceb45a77b750a1e1d9622c936d832328a0689e054db62",
-            }
-        },
-    }
-    DropsPage_ClaimDropRewards = {
-        "operationName": "DropsPage_ClaimDropRewards",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930",
-            }
-        },
-    }
-    ChannelPointsContext = {
-        "operationName": "ChannelPointsContext",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "1530a003a7d374b0380b79db0be0534f30ff46e61cffa2bc0e2468a909fbc024",
-            }
-        },
-    }
-    JoinRaid = {
-        "operationName": "JoinRaid",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "c6a332a86d1087fbbb1a8623aa01bd1313d2386e7c63be60fdb2d1901f01a4ae",
-            }
-        },
-    }
-    ModViewChannelQuery = {
-        "operationName": "ModViewChannelQuery",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "df5d55b6401389afb12d3017c9b2cf1237164220c8ef4ed754eae8188068a807",
-            }
-        },
-    }
-    Inventory = {
-        "operationName": "Inventory",
-        "variables": {"fetchRewardCampaigns": True},
-        # "variables": {},
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b",
-            }
-        },
-    }
-    MakePrediction = {
-        "operationName": "MakePrediction",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "b44682ecc88358817009f20e69d75081b1e58825bb40aa53d5dbadcc17c881d8",
-            }
-        },
-    }
-    ViewerDropsDashboard = {
-        "operationName": "ViewerDropsDashboard",
-        # "variables": {},
-        "variables": {"fetchRewardCampaigns": True},
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619",
-            }
-        },
-    }
-    DropCampaignDetails = {
-        "operationName": "DropCampaignDetails",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "f6396f5ffdde867a8f6f6da18286e4baf02e5b98d14689a69b5af320a4c7b7b8",
-            }
-        },
-    }
-    DropsHighlightService_AvailableDrops = {
-        "operationName": "DropsHighlightService_AvailableDrops",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
-            }
-        },
-    }
-    GetIDFromLogin = {
-        "operationName": "GetIDFromLogin",
-        "variables": {"login": None},
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "94e82a7b1e3c21e186daa73ee2afc4b8f23bade1fbbff6fe8ac133f50a2f58ca",
-            }
-        },
-    }
+    WithIsStreamLiveQuery = _gql("WithIsStreamLiveQuery")
+    PlaybackAccessToken = _gql("PlaybackAccessToken")
+    VideoPlayerStreamInfoOverlayChannel = _gql("VideoPlayerStreamInfoOverlayChannel")
+    ClaimCommunityPoints = _gql("ClaimCommunityPoints")
+    CommunityMomentCallout_Claim = _gql("CommunityMomentCallout_Claim")
+    DropsPage_ClaimDropRewards = _gql("DropsPage_ClaimDropRewards")
+    ChannelPointsContext = _gql("ChannelPointsContext")
+    JoinRaid = _gql("JoinRaid")
+    ModViewChannelQuery = _gql("ModViewChannelQuery")
+    Inventory = _gql("Inventory", {"fetchRewardCampaigns": True})
+    MakePrediction = _gql("MakePrediction")
+    ViewerDropsDashboard = _gql("ViewerDropsDashboard", {"fetchRewardCampaigns": True})
+    DropCampaignDetails = _gql("DropCampaignDetails")
+    DropsHighlightService_AvailableDrops = _gql("DropsHighlightService_AvailableDrops")
+    GetIDFromLogin = _gql("GetIDFromLogin", {"login": None})
     PersonalSections = (
-        {
-            "operationName": "PersonalSections",
-            "variables": {
+        _gql(
+            "PersonalSections",
+            {
                 "input": {
                     "sectionInputs": ["FOLLOWED_SECTION"],
                     "recommendationContext": {"platform": "web"},
@@ -193,69 +76,18 @@ class GQLOperations:
                 "withChannelUser": False,
                 "creatorAnniversariesExperimentEnabled": False,
             },
-            "extensions": {
-                "persistedQuery": {
-                    "version": 1,
-                    "sha256Hash": "9fbdfb00156f754c26bde81eb47436dee146655c92682328457037da1a48ed39",
-                }
-            },
-        },
+        ),
     )
-    ChannelFollows = {
-        "operationName": "ChannelFollows",
-        "variables": {"limit": 100, "order": "ASC"},
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "eecf815273d3d949e5cf0085cc5084cd8a1b5b7b6f7990cf43cb0beadf546907",
-            }
-        },
-    }
-    UserPointsContribution = {
-        "operationName": "UserPointsContribution",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "23ff2c2d60708379131178742327ead913b93b1bd6f665517a6d9085b73f661f"
-            }
-        }
-    }
-    ContributeCommunityPointsCommunityGoal = {
-        "operationName": "ContributeCommunityPointsCommunityGoal",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "5774f0ea5d89587d73021a2e03c3c44777d903840c608754a1be519f51e37bb6"
-            }
-        }
-    }
+    ChannelFollows = _gql("ChannelFollows", {"limit": 100, "order": "ASC"})
+    UserPointsContribution = _gql("UserPointsContribution")
+    ContributeCommunityPointsCommunityGoal = _gql(
+        "ContributeCommunityPointsCommunityGoal"
+    )
 
-    # Browser GQL — channel(name) lists all custom rewards (incl. disabled / text-input).
-    ChannelPointsCustomRewardsListQuery = """
-query ChannelPointsCustomRewardsList($login: String!) {
-  channel(name: $login) {
-    communityPointsSettings {
-      customRewards {
-        id
-        title
-        prompt
-        cost
-        isEnabled
-        isInStock
-        isUserInputRequired
-        defaultImage { url }
-      }
-    }
-  }
-}
-"""
+    from TwitchChannelPointsMiner.platform.gql_queries import (
+        CHANNEL_POINTS_CUSTOM_REWARDS_LIST,
+        REDEEM_COMMUNITY_POINTS_CUSTOM_REWARD,
+    )
 
-    # Full query (not persisted) — used for custom reward redemption from the dashboard.
-    RedeemCommunityPointsCustomRewardQuery = """
-mutation RedeemCommunityPointsCustomReward($input: RedeemCommunityPointsCustomRewardInput!) {
-  redeemCommunityPointsCustomReward(input: $input) {
-    error { code message }
-    redemption { id rewardID status }
-  }
-}
-"""
+    ChannelPointsCustomRewardsListQuery = CHANNEL_POINTS_CUSTOM_REWARDS_LIST
+    RedeemCommunityPointsCustomRewardQuery = REDEEM_COMMUNITY_POINTS_CUSTOM_REWARD
