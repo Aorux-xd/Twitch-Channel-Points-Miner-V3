@@ -97,37 +97,7 @@ def _py_str(v: Any) -> str:
 
 
 def write_account_file(username: str, config: dict[str, Any]):
-    ensure_dirs()
-    priority_lines = []
-    if config.get("priority_streak", True):
-        priority_lines.append("    priority.append(Priority.STREAK)")
-    if config.get("priority_drops", True):
-        priority_lines.append("    priority.append(Priority.DROPS)")
-    if config.get("priority_order", True):
-        priority_lines.append("    priority.append(Priority.ORDER)")
-    if not priority_lines:
-        priority_lines.append("    priority.append(Priority.ORDER)")
+    """Deprecated alias — persists to config/accounts.json via account_store."""
+    from TwitchChannelPointsMiner.platform.account_store import save_account_config
 
-    password = config.get("password")
-    password_py = _py_str(password) if password else "None"
-
-    content = ACCOUNT_TEMPLATE.format(
-        username=username,
-        password=password_py,
-        priority_lines="\n".join(priority_lines),
-        claim_drops_startup=_py_bool(config.get("claim_drops_startup", False)),
-        save_logs=_py_bool(config.get("save_logs", True)),
-        less_logs=_py_bool(config.get("less_logs", False)),
-        make_predictions=_py_bool(config.get("make_predictions", True)),
-        follow_raid=_py_bool(config.get("follow_raid", True)),
-        claim_drops=_py_bool(config.get("claim_drops", True)),
-        claim_moments=_py_bool(config.get("claim_moments", True)),
-        watch_streak=_py_bool(config.get("watch_streak", True)),
-        chat_presence=str(config.get("chat_presence", "ONLINE")).upper(),
-        bet_strategy=str(config.get("bet_strategy") or "SMART").upper(),
-        bet_percentage=_py_int(config.get("bet_percentage"), 5),
-        bet_max_points=_py_int(config.get("bet_max_points"), 50000),
-    )
-
-    path = ACCOUNTS_DIR / f"{username}.py"
-    path.write_text(content, encoding="utf-8")
+    save_account_config(username, config)

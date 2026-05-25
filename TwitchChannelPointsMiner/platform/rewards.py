@@ -24,9 +24,12 @@ def activate_rewards(
             "results": [],
         }
 
+    from TwitchChannelPointsMiner.platform.rate_limit import REDEEM_LIMITER
+
     results = []
     ok_count = 0
     for username in accounts:
+        REDEEM_LIMITER.wait(f"redeem:{username}")
         row = redeem_channel_reward(
             streamer_login,
             reward_id,
@@ -60,9 +63,12 @@ def activate_rewards(
                 streamer=streamer_login,
             )
 
+    fail_count = len(results) - ok_count
     return {
         "ok": ok_count > 0,
+        "partial": ok_count > 0 and fail_count > 0,
         "ok_count": ok_count,
+        "fail_count": fail_count,
         "total": len(results),
         "results": results,
     }

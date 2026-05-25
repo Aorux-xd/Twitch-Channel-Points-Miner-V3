@@ -254,7 +254,7 @@ query ChannelPointsCustomRewardsList($login: String!) {
     RedeemCommunityPointsCustomRewardQuery = """
 mutation RedeemCommunityPointsCustomReward($input: RedeemCommunityPointsCustomRewardInput!) {
   redeemCommunityPointsCustomReward(input: $input) {
-    error { code }
+    error { code message }
     redemption { id rewardID status }
   }
 }

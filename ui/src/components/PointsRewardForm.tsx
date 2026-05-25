@@ -32,7 +32,9 @@ type ActivateResult = {
 
 type ActivateResponse = {
   ok: boolean;
+  partial?: boolean;
   ok_count?: number;
+  fail_count?: number;
   total?: number;
   error?: string;
   results?: ActivateResult[];
@@ -264,14 +266,18 @@ export function PointsRewardForm({
                     )}
                   >
                     {lastResult.ok
-                      ? `успешно: ${lastResult.ok_count ?? 0} / ${lastResult.total ?? 0}`
+                      ? lastResult.partial
+                        ? `частично: ${lastResult.ok_count ?? 0} / ${lastResult.total ?? 0}`
+                        : `успешно: ${lastResult.ok_count ?? 0} / ${lastResult.total ?? 0}`
                       : lastResult.error || 'все попытки неудачны'}
                   </p>
                   {(lastResult.results || []).map((r) => (
                     <div key={r.account} className="flex justify-between gap-2 border-t border-border/50 pt-2">
-                      <span className="text-text-muted">{r.account}</span>
-                      <span className={r.ok ? 'text-lime' : 'text-red-400'}>
-                        {r.ok ? r.status || 'ok' : r.error}
+                      <span className="text-text-muted shrink-0">{r.account}</span>
+                      <span className={cn('text-right', r.ok ? 'text-lime' : 'text-red-400')}>
+                        {r.ok
+                          ? r.status || 'ok'
+                          : `${r.code ? `[${r.code}] ` : ''}${r.error || 'ошибка'}`}
                       </span>
                     </div>
                   ))}

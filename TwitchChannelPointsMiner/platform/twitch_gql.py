@@ -405,38 +405,36 @@ def redeem_channel_reward(
     if not token:
         return {"ok": False, "error": "Нет auth-token в cookie"}
 
-    headers = {
-        "Authorization": f"OAuth {token}",
-        "Client-Id": BROWSER_CLIENT_ID,
-        "Client-Session-Id": client.client_session,
-        "Client-Version": client.client_version,
-        "User-Agent": client.user_agent,
-        "X-Device-Id": client.device_id,
-    }
-    body = {
-        "operationName": "RedeemCommunityPointsCustomReward",
-        "query": GQLOperations.RedeemCommunityPointsCustomRewardQuery,
-        "variables": {"input": gql_input},
-    }
+    from TwitchChannelPointsMiner.platform.gql_queries import (
+        REDEEM_COMMUNITY_POINTS_CUSTOM_REWARD,
+        post_browser_gql,
+        redeem_mutation_body,
+    )
 
-    try:
-        response = requests.post(
-            GQLOperations.url, json=body, headers=headers, timeout=20
-        )
-        payload = response.json()
-    except requests.RequestException as e:
-        logger.warning("redeem_channel_reward request failed: %s", e)
-        return {"ok": False, "error": str(e)}
+    payload = post_browser_gql(
+        client,
+        operation_name="RedeemCommunityPointsCustomReward",
+        variables=redeem_mutation_body(gql_input),
+        query=REDEEM_COMMUNITY_POINTS_CUSTOM_REWARD.strip(),
+        use_persisted=True,
+        timeout=20,
+    )
 
     if payload.get("errors"):
-        msg = payload["errors"][0].get("message", "GQL error")
-        return {"ok": False, "error": msg}
+        err0 = payload["errors"][0]
+        msg = err0.get("message", "GQL error")
+        code = "PERSISTED_QUERY" if "PersistedQueryNotFound" in msg else "GQL_ERROR"
+        return {"ok": False, "error": msg, "code": code}
 
     data = (payload.get("data") or {}).get("redeemCommunityPointsCustomReward") or {}
     err = data.get("error")
     if err:
         code = err.get("code") or "UNKNOWN"
-        return {"ok": False, "error": _redeem_error_message(code), "code": code}
+        detail = err.get("message") or ""
+        msg = _redeem_error_message(code)
+        if detail and detail not in msg:
+            msg = f"{msg} ({detail})"
+        return {"ok": False, "error": msg, "code": code}
 
     redemption = data.get("redemption") or {}
     return {
@@ -451,7 +449,8 @@ def _redeem_error_message(code: str) -> str:
     messages = {
         "INSUFFICIENT_POINTS": "Недостаточно баллов",
         "NOT_ENOUGH_POINTS": "Недостаточно баллов",
-        "OUT_OF_STOCK": "Награда закончилась",
+        "OUT_OF_STOCK": "Награда закончилась (out of stock)",
+        "UNAVAILABLE": "Награда недоступна",
         "MAX_PER_STREAM": "Лимит на стрим исчерпан",
         "MAX_PER_USER_PER_STREAM": "Лимит на пользователя исчерпан",
         "GLOBAL_COOLDOWN": "Глобальный кулдаун награды",
@@ -461,6 +460,8 @@ def _redeem_error_message(code: str) -> str:
         "DISABLED": "Награда отключена на канале",
         "SUB_ONLY": "Только для подписчиков",
         "DUPLICATE_TRANSACTION": "Повторная транзакция — попробуйте снова",
+        "USER_NOT_SUBSCRIBED": "Нужна подписка на канал",
+        "CHANNEL_POINTS_DISABLED": "Баллы канала отключены",
     }
     return messages.get(code, f"Twitch: {code}")
 

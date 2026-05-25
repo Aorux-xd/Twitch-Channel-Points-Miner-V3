@@ -71,6 +71,12 @@ def create_app():
         return jsonify({"error": "Unauthorized"}), 401
 
     threading.Thread(target=_background_worker, daemon=True).start()
+    try:
+        from TwitchChannelPointsMiner.platform.account_store import migrate_py_accounts_to_json
+
+        migrate_py_accounts_to_json()
+    except Exception:
+        pass
     if twitch_network_ok():
         refresh_all_meta_background()
 
@@ -79,7 +85,7 @@ def create_app():
         return jsonify(
             {
                 "status": "ok",
-                "version": "2.1.0",
+                "version": "3.0.0",
                 "twitch_online": twitch_network_ok(),
             }
         )
@@ -120,7 +126,7 @@ def create_app():
                 "hostname": platform.node(),
                 "os_name": platform.system(),
                 "twitch_online": twitch_network_ok(),
-                "api_version": "2.1.0",
+                "api_version": "3.0.0",
             }
         )
 

@@ -16,9 +16,19 @@ _miner_ref = None
 
 
 def _load_create_miner(username: str):
+    """Prefer JSON config + miner_factory; fall back to legacy accounts/<user>.py."""
+    from TwitchChannelPointsMiner.platform.account_store import get_account_config
+    from TwitchChannelPointsMiner.platform.miner_factory import create_miner_from_config
+
+    cfg = get_account_config(username)
+    if cfg:
+        return lambda: create_miner_from_config(username, cfg)
+
     path = ROOT / "accounts" / f"{username}.py"
     if not path.exists():
-        raise FileNotFoundError(f"Account config not found: {path}")
+        raise FileNotFoundError(
+            f"No account config for {username}: add to config/accounts.json or accounts/{username}.py"
+        )
 
     spec = importlib.util.spec_from_file_location(f"account_{username}", path)
     if spec is None or spec.loader is None:
@@ -134,6 +144,10 @@ def main():
 
     global _miner_ref
     try:
+        from TwitchChannelPointsMiner.platform.account_store import migrate_py_accounts_to_json
+
+        migrate_py_accounts_to_json()
+
         create_miner = _load_create_miner(username)
         miner = create_miner()
         _miner_ref = miner
