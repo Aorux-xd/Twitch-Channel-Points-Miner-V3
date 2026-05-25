@@ -75,8 +75,10 @@ def account_schema() -> list[dict[str, Any]]:
 
 
 def _all_usernames() -> set[str]:
-    """Usernames from account configs and/or saved Twitch cookies."""
-    names: set[str] = set()
+    """Usernames from JSON config, legacy .py stubs, and/or cookies."""
+    from TwitchChannelPointsMiner.platform.account_store import list_configured_usernames
+
+    names: set[str] = set(list_configured_usernames())
     for py in ACCOUNTS_DIR.glob("*.py"):
         if not py.name.startswith("_"):
             names.add(py.stem)
@@ -109,13 +111,17 @@ def list_accounts(running: set[str] | None = None) -> list[dict]:
     running = running or set()
     accounts = []
     for username in sorted(_all_usernames()):
+        from TwitchChannelPointsMiner.platform.account_store import get_account_config
+
         py = ACCOUNTS_DIR / f"{username}.py"
         cookie = COOKIES_DIR / f"{username}.pkl"
-        has_config = py.exists()
+        has_json = get_account_config(username) is not None
+        has_py = py.exists()
+        has_config = has_json or has_py
         accounts.append(
             {
                 "username": username,
-                "file": py.name if has_config else None,
+                "file": "config/accounts.json" if has_json else (py.name if has_py else None),
                 "has_config": has_config,
                 "has_cookie": cookie.exists(),
                 "status": "Active" if username in running else "Offline",
@@ -125,57 +131,74 @@ def list_accounts(running: set[str] | None = None) -> list[dict]:
 
 
 def create_account(config: dict[str, Any]) -> dict:
-    from TwitchChannelPointsMiner.platform.account_builder import write_account_file
+    from TwitchChannelPointsMiner.platform.account_store import (
+        get_account_config,
+        save_account_config,
+    )
 
     username = str(config.get("username", "")).strip()
     if not SAFE_USERNAME.match(username):
         raise ValueError("Invalid Twitch username")
 
     ensure_dirs()
-    path = ACCOUNTS_DIR / f"{username}.py"
-    if path.exists():
+    if get_account_config(username):
         raise ValueError("Account already exists")
-    if username in _all_usernames() and (COOKIES_DIR / f"{username}.pkl").exists():
-        write_account_file(username, {**config, "username": username})
+    cookie = COOKIES_DIR / f"{username}.pkl"
+    if username in _all_usernames() and cookie.exists():
+        save_account_config(username, {**config, "username": username})
         return {
             "username": username,
-            "file": path.name,
+            "file": "config/accounts.json",
             "has_cookie": True,
             "has_config": True,
             "restored": True,
         }
 
-    write_account_file(username, config)
+    save_account_config(username, config)
     return {
         "username": username,
-        "file": path.name,
-        "has_cookie": False,
+        "file": "config/accounts.json",
+        "has_cookie": cookie.exists(),
         "has_config": True,
     }
 
 
 def restore_account_config(username: str) -> dict:
-    """Create accounts/<user>.py with defaults when only cookie exists."""
+    """Create JSON config with defaults when only cookie exists."""
+    from TwitchChannelPointsMiner.platform.account_store import (
+        get_account_config,
+        save_account_config,
+    )
+
     username = username.strip()
     if not SAFE_USERNAME.match(username):
         raise ValueError("Invalid Twitch username")
     cookie = COOKIES_DIR / f"{username}.pkl"
     if not cookie.exists():
         raise ValueError("No Twitch cookie for this account")
-    path = ACCOUNTS_DIR / f"{username}.py"
-    if path.exists():
-        return {"username": username, "file": path.name, "has_config": True, "restored": False}
-    from TwitchChannelPointsMiner.platform.account_builder import write_account_file
-
-    write_account_file(username, {"username": username})
-    return {"username": username, "file": path.name, "has_config": True, "restored": True}
+    if get_account_config(username):
+        return {
+            "username": username,
+            "file": "config/accounts.json",
+            "has_config": True,
+            "restored": False,
+        }
+    save_account_config(username, {"username": username})
+    return {
+        "username": username,
+        "file": "config/accounts.json",
+        "has_config": True,
+        "restored": True,
+    }
 
 
 def delete_account(username: str, remove_cookie: bool = True):
     username = username.strip()
+    from TwitchChannelPointsMiner.platform.account_store import delete_account_config
     from TwitchChannelPointsMiner.platform.sessions import stop_sessions
 
     stop_sessions([username])
+    delete_account_config(username)
     path = ACCOUNTS_DIR / f"{username}.py"
     if path.exists():
         path.unlink()

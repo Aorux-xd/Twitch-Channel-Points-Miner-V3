@@ -1,0 +1,580 @@
+[1mdiff --git a/FULLSTACK_README.md b/FULLSTACK_README.md[m
+[1mindex 3110ec2..25d50f4 100644[m
+[1m--- a/FULLSTACK_README.md[m
+[1m+++ b/FULLSTACK_README.md[m
+[36m@@ -9,7 +9,9 @@[m
+ | Python miner | `TwitchChannelPointsMiner/` | Core farming logic |[m
+ | Control plane | `TwitchChannelPointsMiner/platform/` | Config, Twitch API, sessions, stats |[m
+ | API | `api_server.py` | Flask REST + static UI |[m
+[31m-| Accounts | `accounts/<user>.py` | Per-bot config (`create_miner` only) |[m
+[32m+[m[32m| Accounts | `config/accounts.json` | Per-bot JSON config (v3; legacy `accounts/<user>.py` still works) |[m
+[32m+[m[32m| Factory | `platform/miner_factory.py` | Builds miner from JSON |[m
+[32m+[m[32m| GQL | `platform/gql_queries.py` | Persisted queries + redeem/chat helpers |[m
+ | Runner | `session_runner.py` | One entry point per bot process (`--username`) |[m
+ | Streamers | `config/streamers.json` | Global channel list for all bots |[m
+ | UI | `ui/` | React dashboard |[m
+[36m@@ -19,7 +21,7 @@[m
+ ## Data flow[m
+ [m
+ 1. Add streamers in UI → `config/streamers.json`.[m
+[31m-2. Create account in UI → `accounts/<username>.py`.[m
+[32m+[m[32m2. Create account in UI → `config/accounts.json` (entry per bot).[m
+ 3. Start session → `screen -dmS twitchN ./venv/bin/python session_runner.py --username …` → loads account → `mine(streamers)`.[m
+ 4. Status → `var/status/<username>.json` every 15s.[m
+ 5. Platform events → `logs/platform_events.jsonl`.[m
+[36m@@ -80,6 +82,8 @@[m [mRestart `api_server.py` and miner screens after pulling.[m
+ [m
+ ## Notes[m
+ [m
+[31m-- `accounts/*.py` = config only; **do not** duplicate per-user launchers.[m
+[32m+[m[32m- **v3.0.0:** см. [CHANGELOG.md](./CHANGELOG.md) — чат, redeem GQL, JSON-аккаунты, `force` переавторизация.[m
+[32m+[m[32m- После обновления: **Аккаунты → переавторизовать** для каждого бота (старый cookie без TV-кода не обновлялся).[m
+[32m+[m[32m- `config/accounts.json` = конфиг ботов; legacy `accounts/*.py` опционален.[m
+ - `run.py` = reference template; production = UI + `session_runner.py`.[m
+ - First login: device flow → `cookies/<username>.pkl`.[m
+[1mdiff --git a/TwitchChannelPointsMiner/__init__.py b/TwitchChannelPointsMiner/__init__.py[m
+[1mindex c722c92..11e99e6 100644[m
+[1m--- a/TwitchChannelPointsMiner/__init__.py[m
+[1m+++ b/TwitchChannelPointsMiner/__init__.py[m
+[36m@@ -1,5 +1,5 @@[m
+ # -*- coding: utf-8 -*-[m
+[31m-__version__ = "2.0.5"[m
+[32m+[m[32m__version__ = "3.0.0"[m[41m[m
+ from .TwitchChannelPointsMiner import TwitchChannelPointsMiner[m
+ [m
+ __all__ = [[m
+[1mdiff --git a/TwitchChannelPointsMiner/constants.py b/TwitchChannelPointsMiner/constants.py[m
+[1mindex 54e12b5..ebee5dc 100644[m
+[1m--- a/TwitchChannelPointsMiner/constants.py[m
+[1m+++ b/TwitchChannelPointsMiner/constants.py[m
+[36m@@ -254,7 +254,7 @@[m [mquery ChannelPointsCustomRewardsList($login: String!) {[m
+     RedeemCommunityPointsCustomRewardQuery = """[m
+ mutation RedeemCommunityPointsCustomReward($input: RedeemCommunityPointsCustomRewardInput!) {[m
+   redeemCommunityPointsCustomReward(input: $input) {[m
+[31m-    error { code }[m
+[32m+[m[32m    error { code message }[m
+     redemption { id rewardID status }[m
+   }[m
+ }[m
+[1mdiff --git a/TwitchChannelPointsMiner/platform/account_builder.py b/TwitchChannelPointsMiner/platform/account_builder.py[m
+[1mindex 55f4bf1..fb28884 100644[m
+[1m--- a/TwitchChannelPointsMiner/platform/account_builder.py[m
+[1m+++ b/TwitchChannelPointsMiner/platform/account_builder.py[m
+[36m@@ -97,37 +97,7 @@[m [mdef _py_str(v: Any) -> str:[m
+ [m
+ [m
+ def write_account_file(username: str, config: dict[str, Any]):[m
+[31m-    ensure_dirs()[m
+[31m-    priority_lines = [][m
+[31m-    if config.get("priority_streak", True):[m
+[31m-        priority_lines.append("    priority.append(Priority.STREAK)")[m
+[31m-    if config.get("priority_drops", True):[m
+[31m-        priority_lines.append("    priority.append(Priority.DROPS)")[m
+[31m-    if config.get("priority_order", True):[m
+[31m-        priority_lines.append("    priority.append(Priority.ORDER)")[m
+[31m-    if not priority_lines:[m
+[31m-        priority_lines.append("    priority.append(Priority.ORDER)")[m
+[32m+[m[32m    """Deprecated alias — persists to config/accounts.json via account_store."""[m[41m[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.account_store import save_account_config[m[41m[m
+ [m
+[31m-    password = config.get("password")[m
+[31m-    password_py = _py_str(password) if password else "None"[m
+[31m-[m
+[31m-    content = ACCOUNT_TEMPLATE.format([m
+[31m-        username=username,[m
+[31m-        password=password_py,[m
+[31m-        priority_lines="\n".join(priority_lines),[m
+[31m-        claim_drops_startup=_py_bool(config.get("claim_drops_startup", False)),[m
+[31m-        save_logs=_py_bool(config.get("save_logs", True)),[m
+[31m-        less_logs=_py_bool(config.get("less_logs", False)),[m
+[31m-        make_predictions=_py_bool(config.get("make_predictions", True)),[m
+[31m-        follow_raid=_py_bool(config.get("follow_raid", True)),[m
+[31m-        claim_drops=_py_bool(config.get("claim_drops", True)),[m
+[31m-        claim_moments=_py_bool(config.get("claim_moments", True)),[m
+[31m-        watch_streak=_py_bool(config.get("watch_streak", True)),[m
+[31m-        chat_presence=str(config.get("chat_presence", "ONLINE")).upper(),[m
+[31m-        bet_strategy=str(config.get("bet_strategy") or "SMART").upper(),[m
+[31m-        bet_percentage=_py_int(config.get("bet_percentage"), 5),[m
+[31m-        bet_max_points=_py_int(config.get("bet_max_points"), 50000),[m
+[31m-    )[m
+[31m-[m
+[31m-    path = ACCOUNTS_DIR / f"{username}.py"[m
+[31m-    path.write_text(content, encoding="utf-8")[m
+[32m+[m[32m    save_account_config(username, config)[m[41m[m
+[1mdiff --git a/TwitchChannelPointsMiner/platform/accounts.py b/TwitchChannelPointsMiner/platform/accounts.py[m
+[1mindex 9056c86..2cbc505 100644[m
+[1m--- a/TwitchChannelPointsMiner/platform/accounts.py[m
+[1m+++ b/TwitchChannelPointsMiner/platform/accounts.py[m
+[36m@@ -75,8 +75,10 @@[m [mdef account_schema() -> list[dict[str, Any]]:[m
+ [m
+ [m
+ def _all_usernames() -> set[str]:[m
+[31m-    """Usernames from account configs and/or saved Twitch cookies."""[m
+[31m-    names: set[str] = set()[m
+[32m+[m[32m    """Usernames from JSON config, legacy .py stubs, and/or cookies."""[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.account_store import list_configured_usernames[m
+[32m+[m
+[32m+[m[32m    names: set[str] = set(list_configured_usernames())[m
+     for py in ACCOUNTS_DIR.glob("*.py"):[m
+         if not py.name.startswith("_"):[m
+             names.add(py.stem)[m
+[36m@@ -109,13 +111,17 @@[m [mdef list_accounts(running: set[str] | None = None) -> list[dict]:[m
+     running = running or set()[m
+     accounts = [][m
+     for username in sorted(_all_usernames()):[m
+[32m+[m[32m        from TwitchChannelPointsMiner.platform.account_store import get_account_config[m
+[32m+[m
+         py = ACCOUNTS_DIR / f"{username}.py"[m
+         cookie = COOKIES_DIR / f"{username}.pkl"[m
+[31m-        has_config = py.exists()[m
+[32m+[m[32m        has_json = get_account_config(username) is not None[m
+[32m+[m[32m        has_py = py.exists()[m
+[32m+[m[32m        has_config = has_json or has_py[m
+         accounts.append([m
+             {[m
+                 "username": username,[m
+[31m-                "file": py.name if has_config else None,[m
+[32m+[m[32m                "file": "config/accounts.json" if has_json else (py.name if has_py else None),[m
+                 "has_config": has_config,[m
+                 "has_cookie": cookie.exists(),[m
+                 "status": "Active" if username in running else "Offline",[m
+[36m@@ -125,57 +131,74 @@[m [mdef list_accounts(running: set[str] | None = None) -> list[dict]:[m
+ [m
+ [m
+ def create_account(config: dict[str, Any]) -> dict:[m
+[31m-    from TwitchChannelPointsMiner.platform.account_builder import write_account_file[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.account_store import ([m
+[32m+[m[32m        get_account_config,[m
+[32m+[m[32m        save_account_config,[m
+[32m+[m[32m    )[m
+ [m
+     username = str(config.get("username", "")).strip()[m
+     if not SAFE_USERNAME.match(username):[m
+         raise ValueError("Invalid Twitch username")[m
+ [m
+     ensure_dirs()[m
+[31m-    path = ACCOUNTS_DIR / f"{username}.py"[m
+[31m-    if path.exists():[m
+[32m+[m[32m    if get_account_config(username):[m
+         raise ValueError("Account already exists")[m
+[31m-    if username in _all_usernames() and (COOKIES_DIR / f"{username}.pkl").exists():[m
+[31m-        write_account_file(username, {**config, "username": username})[m
+[32m+[m[32m    cookie = COOKIES_DIR / f"{username}.pkl"[m
+[32m+[m[32m    if username in _all_usernames() and cookie.exists():[m
+[32m+[m[32m        save_account_config(username, {**config, "username": username})[m
+         return {[m
+             "username": username,[m
+[31m-            "file": path.name,[m
+[32m+[m[32m            "file": "config/accounts.json",[m
+             "has_cookie": True,[m
+             "has_config": True,[m
+             "restored": True,[m
+         }[m
+ [m
+[31m-    write_account_file(username, config)[m
+[32m+[m[32m    save_account_config(username, config)[m
+     return {[m
+         "username": username,[m
+[31m-        "file": path.name,[m
+[31m-        "has_cookie": False,[m
+[32m+[m[32m        "file": "config/accounts.json",[m
+[32m+[m[32m        "has_cookie": cookie.exists(),[m
+         "has_config": True,[m
+     }[m
+ [m
+ [m
+ def restore_account_config(username: str) -> dict:[m
+[31m-    """Create accounts/<user>.py with defaults when only cookie exists."""[m
+[32m+[m[32m    """Create JSON config with defaults when only cookie exists."""[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.account_store import ([m
+[32m+[m[32m        get_account_config,[m
+[32m+[m[32m        save_account_config,[m
+[32m+[m[32m    )[m
+[32m+[m
+     username = username.strip()[m
+     if not SAFE_USERNAME.match(username):[m
+         raise ValueError("Invalid Twitch username")[m
+     cookie = COOKIES_DIR / f"{username}.pkl"[m
+     if not cookie.exists():[m
+         raise ValueError("No Twitch cookie for this account")[m
+[31m-    path = ACCOUNTS_DIR / f"{username}.py"[m
+[31m-    if path.exists():[m
+[31m-        return {"username": username, "file": path.name, "has_config": True, "restored": False}[m
+[31m-    from TwitchChannelPointsMiner.platform.account_builder import write_account_file[m
+[31m-[m
+[31m-    write_account_file(username, {"username": username})[m
+[31m-    return {"username": username, "file": path.name, "has_config": True, "restored": True}[m
+[32m+[m[32m    if get_account_config(username):[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "username": username,[m
+[32m+[m[32m            "file": "config/accounts.json",[m
+[32m+[m[32m            "has_config": True,[m
+[32m+[m[32m            "restored": False,[m
+[32m+[m[32m        }[m
+[32m+[m[32m    save_account_config(username, {"username": username})[m
+[32m+[m[32m    return {[m
+[32m+[m[32m        "username": username,[m
+[32m+[m[32m        "file": "config/accounts.json",[m
+[32m+[m[32m        "has_config": True,[m
+[32m+[m[32m        "restored": True,[m
+[32m+[m[32m    }[m
+ [m
+ [m
+ def delete_account(username: str, remove_cookie: bool = True):[m
+     username = username.strip()[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.account_store import delete_account_config[m
+     from TwitchChannelPointsMiner.platform.sessions import stop_sessions[m
+ [m
+     stop_sessions([username])[m
+[32m+[m[32m    delete_account_config(username)[m
+     path = ACCOUNTS_DIR / f"{username}.py"[m
+     if path.exists():[m
+         path.unlink()[m
+[1mdiff --git a/TwitchChannelPointsMiner/platform/chat_hub.py b/TwitchChannelPointsMiner/platform/chat_hub.py[m
+[1mindex e706e4d..3713044 100644[m
+[1m--- a/TwitchChannelPointsMiner/platform/chat_hub.py[m
+[1m+++ b/TwitchChannelPointsMiner/platform/chat_hub.py[m
+[36m@@ -27,6 +27,10 @@[m [mJOIN_TIMEOUT_SEC = 15.0[m
+ ECHO_VERIFY_SEC = 4.0[m
+ MAX_SEND_WORKERS = 8[m
+ BULK_SEND_DELAY_SEC = 1.2[m
+[32m+[m[32mBULK_ECHO_VERIFY_SEC = 3.0[m
+[32m+[m[32mBULK_IRC_FALLBACK_CODES = frozenset([m
+[32m+[m[32m    {"msg_rejected", "RATE_LIMIT", "HTTP", "MISSING_SCOPE", "AUTH", "DROPPED", "HELIX_FAIL"}[m
+[32m+[m[32m)[m
+ HELIX_SCOPE_HINT = ([m
+     "нужен scope user:write:chat — удалите cookies/<бот>.pkl и "[m
+     "переавторизуйте бота (TV activate на twitch.tv/activate)"[m
+[36m@@ -565,12 +569,14 @@[m [mclass ChatHub:[m
+             items = items[-limit:][m
+         return [m.to_dict() for m in items][m
+ [m
+[31m-    def _wait_echo(self, streamer: str, account: str, text: str) -> tuple[bool, str]:[m
+[32m+[m[32m    def _wait_echo([m
+[32m+[m[32m        self, streamer: str, account: str, text: str, *, timeout_sec: float | None = None[m
+[32m+[m[32m    ) -> tuple[bool, str]:[m
+         """Confirm message appeared on reader IRC (same channel)."""[m
+         streamer = streamer.lower()[m
+         account_l = account.lower()[m
+         text = text.strip()[m
+[31m-        deadline = time.time() + ECHO_VERIFY_SEC[m
+[32m+[m[32m        deadline = time.time() + (timeout_sec if timeout_sec is not None else ECHO_VERIFY_SEC)[m
+         while time.time() < deadline:[m
+             with self._lock:[m
+                 for m in self._messages.get(streamer, []):[m
+[36m@@ -606,8 +612,37 @@[m [mclass ChatHub:[m
+             return False[m
+         return _send_once(account, token, streamer, text)[m
+ [m
+[32m+[m[32m    def _try_irc_send([m
+[32m+[m[32m        self, streamer: str, account: str, text: str, *, echo_sec: float[m
+[32m+[m[32m    ) -> dict:[m
+[32m+[m[32m        if not self._send_irc(streamer, account, text):[m
+[32m+[m[32m            return {[m
+[32m+[m[32m                "account": account,[m
+[32m+[m[32m                "ok": False,[m
+[32m+[m[32m                "method": "irc",[m
+[32m+[m[32m                "error": "IRC join/PRIVMSG не удался",[m
+[32m+[m[32m                "code": "IRC_FAIL",[m
+[32m+[m[32m            }[m
+[32m+[m[32m        verified, err = self._wait_echo([m
+[32m+[m[32m            streamer, account, text, timeout_sec=echo_sec[m
+[32m+[m[32m        )[m
+[32m+[m[32m        if verified:[m
+[32m+[m[32m            logger.info("chat irc+echo ok %s -> #%s", account, streamer)[m
+[32m+[m[32m            return {"account": account, "ok": True, "method": "irc", "error": None}[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "account": account,[m
+[32m+[m[32m            "ok": False,[m
+[32m+[m[32m            "method": "irc",[m
+[32m+[m[32m            "error": err,[m
+[32m+[m[32m            "code": "NO_ECHO",[m
+[32m+[m[32m        }[m
+[32m+[m
+     def _send_one(self, streamer: str, account: str, text: str, *, bulk: bool) -> dict:[m
+[31m-        """Send from one bot. In bulk mode only Helix (no slow IRC+echo per account)."""[m
+[32m+[m[32m        """Send from one bot: Helix first, IRC+echo fallback when needed."""[m
+[32m+[m[32m        from TwitchChannelPointsMiner.platform.rate_limit import CHAT_SEND_LIMITER[m
+[32m+[m
+[32m+[m[32m        CHAT_SEND_LIMITER.wait(f"chat:{account}")[m
+[32m+[m
+         helix = _helix_send(account, streamer, text)[m
+         if helix.get("ok"):[m
+             logger.info([m
+[36m@@ -626,6 +661,24 @@[m [mclass ChatHub:[m
+         helix_code = helix.get("code")[m
+         err_text = helix.get("error") or "не удалось отправить"[m
+ [m
+[32m+[m[32m        try_irc = helix_code in ("MISSING_SCOPE", "AUTH") or ([m
+[32m+[m[32m            bulk and helix_code in BULK_IRC_FALLBACK_CODES[m
+[32m+[m[32m        )[m
+[32m+[m[32m        if try_irc:[m
+[32m+[m[32m            irc_row = self._try_irc_send([m
+[32m+[m[32m                streamer,[m
+[32m+[m[32m                account,[m
+[32m+[m[32m                text,[m
+[32m+[m[32m                echo_sec=BULK_ECHO_VERIFY_SEC if bulk else ECHO_VERIFY_SEC,[m
+[32m+[m[32m            )[m
+[32m+[m[32m            if irc_row.get("ok"):[m
+[32m+[m[32m                return irc_row[m
+[32m+[m[32m            if bulk:[m
+[32m+[m[32m                return {[m
+[32m+[m[32m                    **irc_row,[m
+[32m+[m[32m                    "error": irc_row.get("error") or err_text,[m
+[32m+[m[32m                }[m
+[32m+[m
+         if bulk:[m
+             return {[m
+                 "account": account,[m
+[36m@@ -644,27 +697,7 @@[m [mclass ChatHub:[m
+                 "code": helix_code,[m
+             }[m
+ [m
+[31m-        if not self._send_irc(streamer, account, text):[m
+[31m-            return {[m
+[31m-                "account": account,[m
+[31m-                "ok": False,[m
+[31m-                "method": "irc",[m
+[31m-                "error": "IRC join/PRIVMSG не удался",[m
+[31m-            }[m
+[31m-[m
+[31m-        verified, err = self._wait_echo(streamer, account, text)[m
+[31m-        if verified:[m
+[31m-            logger.info("chat irc+echo ok %s -> #%s", account, streamer)[m
+[31m-            return {"account": account, "ok": True, "method": "irc", "error": None}[m
+[31m-[m
+[31m-        logger.warning("chat irc no echo %s -> #%s: %s", account, streamer, err)[m
+[31m-        return {[m
+[31m-            "account": account,[m
+[31m-            "ok": False,[m
+[31m-            "method": "irc",[m
+[31m-            "error": err,[m
+[31m-            "code": "NO_ECHO",[m
+[31m-        }[m
+[32m+[m[32m        return self._try_irc_send(streamer, account, text, echo_sec=ECHO_VERIFY_SEC)[m
+ [m
+     def send_message([m
+         self, streamer: str, text: str, accounts: list[str][m
+[1mdiff --git a/TwitchChannelPointsMiner/platform/rewards.py b/TwitchChannelPointsMiner/platform/rewards.py[m
+[1mindex cce00b4..9b06db6 100644[m
+[1m--- a/TwitchChannelPointsMiner/platform/rewards.py[m
+[1m+++ b/TwitchChannelPointsMiner/platform/rewards.py[m
+[36m@@ -24,9 +24,12 @@[m [mdef activate_rewards([m
+             "results": [],[m
+         }[m
+ [m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.rate_limit import REDEEM_LIMITER[m
+[32m+[m
+     results = [][m
+     ok_count = 0[m
+     for username in accounts:[m
+[32m+[m[32m        REDEEM_LIMITER.wait(f"redeem:{username}")[m
+         row = redeem_channel_reward([m
+             streamer_login,[m
+             reward_id,[m
+[36m@@ -60,9 +63,12 @@[m [mdef activate_rewards([m
+                 streamer=streamer_login,[m
+             )[m
+ [m
+[32m+[m[32m    fail_count = len(results) - ok_count[m
+     return {[m
+         "ok": ok_count > 0,[m
+[32m+[m[32m        "partial": ok_count > 0 and fail_count > 0,[m
+         "ok_count": ok_count,[m
+[32m+[m[32m        "fail_count": fail_count,[m
+         "total": len(results),[m
+         "results": results,[m
+     }[m
+[1mdiff --git a/TwitchChannelPointsMiner/platform/twitch_gql.py b/TwitchChannelPointsMiner/platform/twitch_gql.py[m
+[1mindex 75b94be..da8219a 100644[m
+[1m--- a/TwitchChannelPointsMiner/platform/twitch_gql.py[m
+[1m+++ b/TwitchChannelPointsMiner/platform/twitch_gql.py[m
+[36m@@ -405,38 +405,36 @@[m [mdef redeem_channel_reward([m
+     if not token:[m
+         return {"ok": False, "error": "Нет auth-token в cookie"}[m
+ [m
+[31m-    headers = {[m
+[31m-        "Authorization": f"OAuth {token}",[m
+[31m-        "Client-Id": BROWSER_CLIENT_ID,[m
+[31m-        "Client-Session-Id": client.client_session,[m
+[31m-        "Client-Version": client.client_version,[m
+[31m-        "User-Agent": client.user_agent,[m
+[31m-        "X-Device-Id": client.device_id,[m
+[31m-    }[m
+[31m-    body = {[m
+[31m-        "operationName": "RedeemCommunityPointsCustomReward",[m
+[31m-        "query": GQLOperations.RedeemCommunityPointsCustomRewardQuery,[m
+[31m-        "variables": {"input": gql_input},[m
+[31m-    }[m
+[31m-[m
+[31m-    try:[m
+[31m-        response = requests.post([m
+[31m-            GQLOperations.url, json=body, headers=headers, timeout=20[m
+[31m-        )[m
+[31m-        payload = response.json()[m
+[31m-    except requests.RequestException as e:[m
+[31m-        logger.warning("redeem_channel_reward request failed: %s", e)[m
+[31m-        return {"ok": False, "error": str(e)}[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.gql_queries import ([m
+[32m+[m[32m        REDEEM_COMMUNITY_POINTS_CUSTOM_REWARD,[m
+[32m+[m[32m        post_browser_gql,[m
+[32m+[m[32m        redeem_mutation_body,[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    payload = post_browser_gql([m
+[32m+[m[32m        client,[m
+[32m+[m[32m        operation_name="RedeemCommunityPointsCustomReward",[m
+[32m+[m[32m        variables=redeem_mutation_body(gql_input),[m
+[32m+[m[32m        query=REDEEM_COMMUNITY_POINTS_CUSTOM_REWARD.strip(),[m
+[32m+[m[32m        use_persisted=True,[m
+[32m+[m[32m        timeout=20,[m
+[32m+[m[32m    )[m
+ [m
+     if payload.get("errors"):[m
+[31m-        msg = payload["errors"][0].get("message", "GQL error")[m
+[31m-        return {"ok": False, "error": msg}[m
+[32m+[m[32m        err0 = payload["errors"][0][m
+[32m+[m[32m        msg = err0.get("message", "GQL error")[m
+[32m+[m[32m        code = "PERSISTED_QUERY" if "PersistedQueryNotFound" in msg else "GQL_ERROR"[m
+[32m+[m[32m        return {"ok": False, "error": msg, "code": code}[m
+ [m
+     data = (payload.get("data") or {}).get("redeemCommunityPointsCustomReward") or {}[m
+     err = data.get("error")[m
+     if err:[m
+         code = err.get("code") or "UNKNOWN"[m
+[31m-        return {"ok": False, "error": _redeem_error_message(code), "code": code}[m
+[32m+[m[32m        detail = err.get("message") or ""[m
+[32m+[m[32m        msg = _redeem_error_message(code)[m
+[32m+[m[32m        if detail and detail not in msg:[m
+[32m+[m[32m            msg = f"{msg} ({detail})"[m
+[32m+[m[32m        return {"ok": False, "error": msg, "code": code}[m
+ [m
+     redemption = data.get("redemption") or {}[m
+     return {[m
+[36m@@ -451,7 +449,8 @@[m [mdef _redeem_error_message(code: str) -> str:[m
+     messages = {[m
+         "INSUFFICIENT_POINTS": "Недостаточно баллов",[m
+         "NOT_ENOUGH_POINTS": "Недостаточно баллов",[m
+[31m-        "OUT_OF_STOCK": "Награда закончилась",[m
+[32m+[m[32m        "OUT_OF_STOCK": "Награда закончилась (out of stock)",[m
+[32m+[m[32m        "UNAVAILABLE": "Награда недоступна",[m
+         "MAX_PER_STREAM": "Лимит на стрим исчерпан",[m
+         "MAX_PER_USER_PER_STREAM": "Лимит на пользователя исчерпан",[m
+         "GLOBAL_COOLDOWN": "Глобальный кулдаун награды",[m
+[36m@@ -461,6 +460,8 @@[m [mdef _redeem_error_message(code: str) -> str:[m
+         "DISABLED": "Награда отключена на канале",[m
+         "SUB_ONLY": "Только для подписчиков",[m
+         "DUPLICATE_TRANSACTION": "Повторная транзакция — попробуйте снова",[m
+[32m+[m[32m        "USER_NOT_SUBSCRIBED": "Нужна подписка на канал",[m
+[32m+[m[32m        "CHANNEL_POINTS_DISABLED": "Баллы канала отключены",[m
+     }[m
+     return messages.get(code, f"Twitch: {code}")[m
+ [m
+[1mdiff --git a/api_server.py b/api_server.py[m
+[1mindex 99ed900..7fcf069 100644[m
+[1m--- a/api_server.py[m
+[1m+++ b/api_server.py[m
+[36m@@ -71,6 +71,12 @@[m [mdef create_app():[m
+         return jsonify({"error": "Unauthorized"}), 401[m
+ [m
+     threading.Thread(target=_background_worker, daemon=True).start()[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        from TwitchChannelPointsMiner.platform.account_store import migrate_py_accounts_to_json[m
+[32m+[m
+[32m+[m[32m        migrate_py_accounts_to_json()[m
+[32m+[m[32m    except Exception:[m
+[32m+[m[32m        pass[m
+     if twitch_network_ok():[m
+         refresh_all_meta_background()[m
+ [m
+[36m@@ -79,7 +85,7 @@[m [mdef create_app():[m
+         return jsonify([m
+             {[m
+                 "status": "ok",[m
+[31m-                "version": "2.1.0",[m
+[32m+[m[32m                "version": "3.0.0",[m
+                 "twitch_online": twitch_network_ok(),[m
+             }[m
+         )[m
+[36m@@ -120,7 +126,7 @@[m [mdef create_app():[m
+                 "hostname": platform.node(),[m
+                 "os_name": platform.system(),[m
+                 "twitch_online": twitch_network_ok(),[m
+[31m-                "api_version": "2.1.0",[m
+[32m+[m[32m                "api_version": "3.0.0",[m
+             }[m
+         )[m
+ [m
+[1mdiff --git a/session_runner.py b/session_runner.py[m
+[1mindex 0821aae..29fbc84 100644[m
+[1m--- a/session_runner.py[m
+[1m+++ b/session_runner.py[m
+[36m@@ -16,9 +16,19 @@[m [m_miner_ref = None[m
+ [m
+ [m
+ def _load_create_miner(username: str):[m
+[32m+[m[32m    """Prefer JSON config + miner_factory; fall back to legacy accounts/<user>.py."""[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.account_store import get_account_config[m
+[32m+[m[32m    from TwitchChannelPointsMiner.platform.miner_factory import create_miner_from_config[m
+[32m+[m
+[32m+[m[32m    cfg = get_account_config(username)[m
+[32m+[m[32m    if cfg:[m
+[32m+[m[32m        return lambda: create_miner_from_config(username, cfg)[m
+[32m+[m
+     path = ROOT / "accounts" / f"{username}.py"[m
+     if not path.exists():[m
+[31m-        raise FileNotFoundError(f"Account config not found: {path}")[m
+[32m+[m[32m        raise FileNotFoundError([m
+[32m+[m[32m            f"No account config for {username}: add to config/accounts.json or accounts/{username}.py"[m
+[32m+[m[32m        )[m
+ [m
+     spec = importlib.util.spec_from_file_location(f"account_{username}", path)[m
+     if spec is None or spec.loader is None:[m
+[36m@@ -134,6 +144,10 @@[m [mdef main():[m
+ [m
+     global _miner_ref[m
+     try:[m
+[32m+[m[32m        from TwitchChannelPointsMiner.platform.account_store import migrate_py_accounts_to_json[m
+[32m+[m
+[32m+[m[32m        migrate_py_accounts_to_json()[m
+[32m+[m
+         create_miner = _load_create_miner(username)[m
+         miner = create_miner()[m
+         _miner_ref = miner[m
+[1mdiff --git a/ui/src/components/PointsRewardForm.tsx b/ui/src/components/PointsRewardForm.tsx[m
+[1mindex 6399062..0eb0966 100644[m
+[1m--- a/ui/src/components/PointsRewardForm.tsx[m
+[1m+++ b/ui/src/components/PointsRewardForm.tsx[m
+[36m@@ -32,7 +32,9 @@[m [mtype ActivateResult = {[m
+ [m
+ type ActivateResponse = {[m
+   ok: boolean;[m
+[32m+[m[32m  partial?: boolean;[m
+   ok_count?: number;[m
+[32m+[m[32m  fail_count?: number;[m
+   total?: number;[m
+   error?: string;[m
+   results?: ActivateResult[];[m
+[36m@@ -264,14 +266,18 @@[m [mexport function PointsRewardForm({[m
+                     )}[m
+                   >[m
+                     {lastResult.ok[m
+[31m-                      ? `успешно: ${lastResult.ok_count ?? 0} / ${lastResult.total ?? 0}`[m
+[32m+[m[32m                      ? lastResult.partial[m
+[32m+[m[32m                        ? `частично: ${lastResult.ok_count ?? 0} / ${lastResult.total ?? 0}`[m
+[32m+[m[32m                        : `успешно: ${lastResult.ok_count ?? 0} / ${lastResult.total ?? 0}`[m
+                       : lastResult.error || 'все попытки неудачны'}[m
+                   </p>[m
+                   {(lastResult.results || []).map((r) => ([m
+                     <div key={r.account} className="flex justify-between gap-2 border-t border-border/50 pt-2">[m
+[31m-                      <span className="text-text-muted">{r.account}</span>[m
+[31m-                      <span className={r.ok ? 'text-lime' : 'text-red-400'}>[m
+[31m-                        {r.ok ? r.status || 'ok' : r.error}[m
+[32m+[m[32m                      <span className="text-text-muted shrink-0">{r.account}</span>[m
+[32m+[m[32m                      <span className={cn('text-right', r.ok ? 'text-lime' : 'text-red-400')}>[m
+[32m+[m[32m                        {r.ok[m
+[32m+[m[32m                          ? r.status || 'ok'[m
+[32m+[m[32m                          : `${r.code ? `[${r.code}] ` : ''}${r.error || 'ошибка'}`}[m
+                       </span>[m
+                     </div>[m
+                   ))}[m

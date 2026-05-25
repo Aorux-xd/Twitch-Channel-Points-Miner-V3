@@ -9,7 +9,9 @@
 | Python miner | `TwitchChannelPointsMiner/` | Core farming logic |
 | Control plane | `TwitchChannelPointsMiner/platform/` | Config, Twitch API, sessions, stats |
 | API | `api_server.py` | Flask REST + static UI |
-| Accounts | `accounts/<user>.py` | Per-bot config (`create_miner` only) |
+| Accounts | `config/accounts.json` | Per-bot JSON config (v3; legacy `accounts/<user>.py` still works) |
+| Factory | `platform/miner_factory.py` | Builds miner from JSON |
+| GQL | `platform/gql_queries.py` | Persisted queries + redeem/chat helpers |
 | Runner | `session_runner.py` | One entry point per bot process (`--username`) |
 | Streamers | `config/streamers.json` | Global channel list for all bots |
 | UI | `ui/` | React dashboard |
@@ -19,7 +21,7 @@
 ## Data flow
 
 1. Add streamers in UI → `config/streamers.json`.
-2. Create account in UI → `accounts/<username>.py`.
+2. Create account in UI → `config/accounts.json` (entry per bot).
 3. Start session → `screen -dmS twitchN ./venv/bin/python session_runner.py --username …` → loads account → `mine(streamers)`.
 4. Status → `var/status/<username>.json` every 15s.
 5. Platform events → `logs/platform_events.jsonl`.
@@ -80,6 +82,8 @@ Restart `api_server.py` and miner screens after pulling.
 
 ## Notes
 
-- `accounts/*.py` = config only; **do not** duplicate per-user launchers.
+- **v3.0.0:** см. [CHANGELOG.md](./CHANGELOG.md) — чат, redeem GQL, JSON-аккаунты, `force` переавторизация.
+- После обновления: **Аккаунты → переавторизовать** для каждого бота (старый cookie без TV-кода не обновлялся).
+- `config/accounts.json` = конфиг ботов; legacy `accounts/*.py` опционален.
 - `run.py` = reference template; production = UI + `session_runner.py`.
 - First login: device flow → `cookies/<username>.pkl`.

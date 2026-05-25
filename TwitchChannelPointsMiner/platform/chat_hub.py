@@ -27,6 +27,10 @@ JOIN_TIMEOUT_SEC = 15.0
 ECHO_VERIFY_SEC = 4.0
 MAX_SEND_WORKERS = 8
 BULK_SEND_DELAY_SEC = 1.2
+BULK_ECHO_VERIFY_SEC = 3.0
+BULK_IRC_FALLBACK_CODES = frozenset(
+    {"msg_rejected", "RATE_LIMIT", "HTTP", "MISSING_SCOPE", "AUTH", "DROPPED", "HELIX_FAIL"}
+)
 HELIX_SCOPE_HINT = (
     "нужен scope user:write:chat — удалите cookies/<бот>.pkl и "
     "переавторизуйте бота (TV activate на twitch.tv/activate)"
@@ -565,12 +569,14 @@ class ChatHub:
             items = items[-limit:]
         return [m.to_dict() for m in items]
 
-    def _wait_echo(self, streamer: str, account: str, text: str) -> tuple[bool, str]:
+    def _wait_echo(
+        self, streamer: str, account: str, text: str, *, timeout_sec: float | None = None
+    ) -> tuple[bool, str]:
         """Confirm message appeared on reader IRC (same channel)."""
         streamer = streamer.lower()
         account_l = account.lower()
         text = text.strip()
-        deadline = time.time() + ECHO_VERIFY_SEC
+        deadline = time.time() + (timeout_sec if timeout_sec is not None else ECHO_VERIFY_SEC)
         while time.time() < deadline:
             with self._lock:
                 for m in self._messages.get(streamer, []):
@@ -606,8 +612,37 @@ class ChatHub:
             return False
         return _send_once(account, token, streamer, text)
 
+    def _try_irc_send(
+        self, streamer: str, account: str, text: str, *, echo_sec: float
+    ) -> dict:
+        if not self._send_irc(streamer, account, text):
+            return {
+                "account": account,
+                "ok": False,
+                "method": "irc",
+                "error": "IRC join/PRIVMSG не удался",
+                "code": "IRC_FAIL",
+            }
+        verified, err = self._wait_echo(
+            streamer, account, text, timeout_sec=echo_sec
+        )
+        if verified:
+            logger.info("chat irc+echo ok %s -> #%s", account, streamer)
+            return {"account": account, "ok": True, "method": "irc", "error": None}
+        return {
+            "account": account,
+            "ok": False,
+            "method": "irc",
+            "error": err,
+            "code": "NO_ECHO",
+        }
+
     def _send_one(self, streamer: str, account: str, text: str, *, bulk: bool) -> dict:
-        """Send from one bot. In bulk mode only Helix (no slow IRC+echo per account)."""
+        """Send from one bot: Helix first, IRC+echo fallback when needed."""
+        from TwitchChannelPointsMiner.platform.rate_limit import CHAT_SEND_LIMITER
+
+        CHAT_SEND_LIMITER.wait(f"chat:{account}")
+
         helix = _helix_send(account, streamer, text)
         if helix.get("ok"):
             logger.info(
@@ -625,6 +660,24 @@ class ChatHub:
 
         helix_code = helix.get("code")
         err_text = helix.get("error") or "не удалось отправить"
+
+        try_irc = helix_code in ("MISSING_SCOPE", "AUTH") or (
+            bulk and helix_code in BULK_IRC_FALLBACK_CODES
+        )
+        if try_irc:
+            irc_row = self._try_irc_send(
+                streamer,
+                account,
+                text,
+                echo_sec=BULK_ECHO_VERIFY_SEC if bulk else ECHO_VERIFY_SEC,
+            )
+            if irc_row.get("ok"):
+                return irc_row
+            if bulk:
+                return {
+                    **irc_row,
+                    "error": irc_row.get("error") or err_text,
+                }
 
         if bulk:
             return {
@@ -644,27 +697,7 @@ class ChatHub:
                 "code": helix_code,
             }
 
-        if not self._send_irc(streamer, account, text):
-            return {
-                "account": account,
-                "ok": False,
-                "method": "irc",
-                "error": "IRC join/PRIVMSG не удался",
-            }
-
-        verified, err = self._wait_echo(streamer, account, text)
-        if verified:
-            logger.info("chat irc+echo ok %s -> #%s", account, streamer)
-            return {"account": account, "ok": True, "method": "irc", "error": None}
-
-        logger.warning("chat irc no echo %s -> #%s: %s", account, streamer, err)
-        return {
-            "account": account,
-            "ok": False,
-            "method": "irc",
-            "error": err,
-            "code": "NO_ECHO",
-        }
+        return self._try_irc_send(streamer, account, text, echo_sec=ECHO_VERIFY_SEC)
 
     def send_message(
         self, streamer: str, text: str, accounts: list[str]
