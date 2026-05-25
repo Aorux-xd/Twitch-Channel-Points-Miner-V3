@@ -15,7 +15,6 @@ export type Account = {
   has_cookie: boolean;
   pid?: number;
   startedAt?: number;
-  screen?: string;
 };
 
 export type AccountField = {

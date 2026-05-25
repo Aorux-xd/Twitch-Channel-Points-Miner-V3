@@ -1,5 +1,39 @@
 # Changelog
 
+## [3.3.0] — 2026-05-25
+
+### P1 — Multi-session stability
+
+- **Reconciler** каждые **5 с**; немедленный reconcile при изменении `var/sessions.json` (mtime watcher + `notify_sessions_changed()` из API).
+- Авто-restart упавших ботов: до **3 попыток** с backoff **5 / 15 / 45 с**; исключения в потоке не валят весь runner.
+- Graceful shutdown: **SIGINT / SIGTERM / SIGQUIT** → `miner.end()` → финальный снимок `var/multi_session_state.json`.
+- Per-bot **heartbeat** и `stale` в state; watcher потоков.
+
+### P2 — Chat, monitoring, auth
+
+- Массовая отправка чата: очередь + backpressure (`BACKPRESSURE` при переполнении).
+- UI чата: время последнего сообщения, статус подключения, баннер **WRONG_ACCOUNT** → переавторизация.
+- `GET /api/sessions/debug`: `worker_details` (uptime, last_error, memory est).
+- `GET /api/system`: `bot_resources`, память/CPU multi runner.
+- После re-auth — **restart только одного** бота (`restart_single_session`).
+
+### P3 — Config & cleanup
+
+- Единый **`config/settings.json`** (rate limits, TTL кэшей, runner, log rotation); legacy `rate_limits.json` подхватывается.
+- `GQLClient` singleton (`get_gql_client`).
+- Логи: `logs/multi_session_runner.log` + `logs/sessions/<user>.log`, ротация **5 MB × 3**.
+- UI: убраны badge `screen`; менее агрессивный refresh meta/points (настраивается).
+
+### Migration V3.2 → V3.3
+
+1. `git pull` + `cd ui && npm run build`
+2. Перезапустить `api_server` и `multi_session_runner` (или старт из панели)
+3. Проверить `config/settings.json` (при необходимости скопировать из `config/rate_limits.json` в `rate_limits`)
+4. `GET /api/sessions/debug` — heartbeat / retry meta
+5. При `WRONG_ACCOUNT` в чате — **переавторизовать** конкретного бота (restart только его)
+
+---
+
 ## [3.2.0] — 2026-05-24
 
 ### P1 — Multi-session & legacy cleanup

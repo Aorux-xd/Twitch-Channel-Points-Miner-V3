@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -145,12 +146,43 @@ def _persisted_query_not_found(payload: dict) -> bool:
     return False
 
 
+_gql_client_pool: dict[tuple[int, bool], "GQLClient"] = {}
+_gql_pool_lock = threading.Lock()
+
+
+def get_gql_client(twitch_client, *, browser: bool = False) -> "GQLClient":
+    """Reuse one GQLClient per Twitch instance + browser flag."""
+    key = (id(twitch_client), browser)
+    with _gql_pool_lock:
+        client = _gql_client_pool.get(key)
+        if client is None:
+            client = GQLClient(twitch_client, browser=browser)
+            _gql_client_pool[key] = client
+        return client
+
+
+def invalidate_gql_clients(twitch_client=None) -> None:
+    with _gql_pool_lock:
+        if twitch_client is None:
+            _gql_client_pool.clear()
+            return
+        drop = [k for k in _gql_client_pool if k[0] == id(twitch_client)]
+        for k in drop:
+            _gql_client_pool.pop(k, None)
+
+
 class GQLClient:
     """POST gql.twitch.tv with persisted-query fallback to full query text."""
 
     def __init__(self, twitch_client, *, browser: bool = False) -> None:
         self._client = twitch_client
         self._browser = browser
+
+    def __enter__(self) -> "GQLClient":
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
 
     def _headers(self) -> dict[str, str]:
         token = self._client.twitch_login.get_auth_token()
@@ -228,7 +260,7 @@ class GQLClient:
 
 
 def post_browser_gql(client, *, operation_name: str, variables: dict, query: str | None = None, **kw) -> dict:
-    return GQLClient(client, browser=True).post(
+    return get_gql_client(client, browser=True).post(
         operation_name, variables, query=query, **kw
     )
 
@@ -237,7 +269,7 @@ def post_tv_gql(client, body: dict) -> dict:
     """Primary TV-client GQL path (replaces direct requests in Twitch.py)."""
     op = body.get("operationName", "unknown")
     variables = body.get("variables")
-    return GQLClient(client, browser=False).post(
+    return get_gql_client(client, browser=False).post(
         op, variables, body=body, use_persisted=True
     )
 

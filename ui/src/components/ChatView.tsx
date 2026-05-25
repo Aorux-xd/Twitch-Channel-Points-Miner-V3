@@ -33,6 +33,9 @@ type ChatDebugInfo = {
   reader_alive?: boolean;
   reader_joined?: boolean;
   buffer_messages?: number;
+  last_message_ts?: number | null;
+  connection?: string;
+  bulk_queue_size?: number;
 };
 
 type ChatPollResponse = {
@@ -118,6 +121,7 @@ export function ChatView() {
   const [error, setError] = useState<string | null>(null);
   const [lastDebug, setLastDebug] = useState<ChatDebugInfo | null>(null);
   const [readerAccount, setReaderAccount] = useState<string | null>(null);
+  const [wrongAccountHint, setWrongAccountHint] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pollCountRef = useRef(0);
 
@@ -130,6 +134,19 @@ export function ChatView() {
     () => ['Все сессии', ...cookieAccounts.map((a) => a.username)],
     [cookieAccounts]
   );
+
+  const lastMessageTs = useMemo(() => {
+    if (!messages.length) return null;
+    return messages[messages.length - 1].ts;
+  }, [messages]);
+
+  const connectionLabel = useMemo(() => {
+    const c = lastDebug?.connection;
+    if (c === 'connected') return 'подключён';
+    if (c === 'joining') return 'подключение…';
+    if (c === 'reconnecting') return 'переподключение';
+    return 'нет reader';
+  }, [lastDebug?.connection]);
 
   const pollMessages = useCallback(async (reason: string) => {
     if (!selectedStreamer) return;
@@ -276,6 +293,14 @@ export function ChatView() {
       }
 
       const failed = (data.results || []).filter((r) => !r.ok);
+      const wrongAccount = failed.find((r) => r.code === 'WRONG_ACCOUNT');
+      if (wrongAccount) {
+        setWrongAccountHint(
+          `${wrongAccount.account}: cookie не совпадает — переавторизуйте бота в «Аккаунты»`
+        );
+      } else {
+        setWrongAccountHint(null);
+      }
 
       if (data.ok) {
         setDraft('');
@@ -340,12 +365,28 @@ export function ChatView() {
         </div>
       </div>
 
+      {wrongAccountHint && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm font-mono lowercase text-amber-300">
+          {wrongAccountHint}
+          <button
+            type="button"
+            className="ml-3 underline hover:text-white"
+            onClick={() => setWrongAccountHint(null)}
+          >
+            скрыть
+          </button>
+        </div>
+      )}
+
       <div className="rounded-[24px] border border-border bg-card-bg flex flex-col h-[calc(100vh-280px)] min-h-[420px] overflow-hidden">
         <div className="px-6 py-3 border-b border-border bg-dashboard-bg/50 shrink-0 space-y-1">
           <p className="text-[10px] font-mono text-text-muted lowercase">
             канал #{selectedStreamer || '—'}
             {readerAccount ? ` · irc reader: ${readerAccount}` : ''}
-            {lastDebug?.reader_joined === false ? ' · reader не в канале (join…)' : ''}
+            {` · ${connectionLabel}`}
+            {lastMessageTs
+              ? ` · последнее: ${new Date(lastMessageTs * 1000).toLocaleTimeString()}`
+              : ''}
             {sendStatus !== 'idle' && sendStatus !== 'sent' ? ` · send: ${sendStatus}` : ''}
             {sendStatus === 'sent' ? ' · отправлено' : ''}
             {error ? ` · ${error}` : ''}

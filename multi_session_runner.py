@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Единственная точка запуска ботов (V3.2).
+Единственная точка запуска ботов (V3.3).
 
   python multi_session_runner.py              # reconcile loop (production)
   python multi_session_runner.py --single USER  # отладка одного бота

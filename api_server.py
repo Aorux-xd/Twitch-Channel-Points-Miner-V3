@@ -29,10 +29,13 @@ PANEL_TOKEN = hashlib.sha256(
 
 
 def _background_worker():
+    from TwitchChannelPointsMiner.platform.settings import get_settings
+
     while True:
+        interval = get_settings().get("background_refresh_interval_sec", 90)
         try:
             if not twitch_network_ok():
-                time.sleep(50)
+                time.sleep(interval)
                 continue
             entries = _base_entries()
             if entries:
@@ -52,7 +55,7 @@ def _background_worker():
                     )
         except Exception as e:
             logger.warning("background refresh failed: %s", e)
-        time.sleep(50)
+        time.sleep(interval)
 
 
 def create_app():
@@ -85,7 +88,7 @@ def create_app():
         return jsonify(
             {
                 "status": "ok",
-                "version": "3.2.0",
+                "version": "3.3.0",
                 "twitch_online": twitch_network_ok(),
             }
         )
@@ -105,6 +108,10 @@ def create_app():
         uptime_s = int(time.time() - boot)
         mem = psutil.virtual_memory()
         cpu_pct = psutil.cpu_percent(interval=0.1)
+        from TwitchChannelPointsMiner.platform.multi_session_manager import (
+            get_runtime_state,
+            worker_resource_stats,
+        )
         from TwitchChannelPointsMiner.platform.sessions import (
             active_worker_usernames,
             multi_runner_system_stats,
@@ -113,6 +120,18 @@ def create_app():
         desired = load_sessions()
         disk = psutil.disk_usage("/")
         runner = multi_runner_system_stats()
+        runtime = get_runtime_state()
+        active = active_worker_usernames()
+        bot_resources = {
+            u: worker_resource_stats(u, runtime) for u in sorted(active)
+        }
+        mgr_pid = runner.get("multi_session_pid")
+        mgr_proc = None
+        if mgr_pid:
+            try:
+                mgr_proc = psutil.Process(mgr_pid)
+            except Exception:
+                mgr_proc = None
         return jsonify(
             {
                 "cpu": f"{cpu_pct:.1f}%",
@@ -127,14 +146,21 @@ def create_app():
                 "uptime_seconds": uptime_s,
                 "status": "Healthy",
                 "active_sessions": len(desired),
-                "active_workers": len(active_worker_usernames()),
+                "active_workers": len(active),
                 "multi_session": runner,
+                "bot_resources": bot_resources,
+                "manager_memory_mb": (
+                    round(mgr_proc.memory_info().rss / (1024**2), 1) if mgr_proc else None
+                ),
+                "manager_cpu_percent": (
+                    round(mgr_proc.cpu_percent(interval=0.1), 1) if mgr_proc else None
+                ),
                 "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                 "platform": platform.platform(),
                 "hostname": platform.node(),
                 "os_name": platform.system(),
                 "twitch_online": twitch_network_ok(),
-                "api_version": "3.2.0",
+                "api_version": "3.3.0",
             }
         )
 

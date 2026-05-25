@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import time
-from pathlib import Path
 
-from TwitchChannelPointsMiner.platform.paths import CONFIG_DIR, ensure_dirs
+from TwitchChannelPointsMiner.platform.settings import get_section, reload_settings
 
-DEFAULT_LIMITS = {
-    "chat_send_sec": 0.85,
-    "redeem_sec": 1.0,
-    "gql_sec": 0.35,
-}
-
-_LIMITS_FILE = CONFIG_DIR / "rate_limits.json"
 _lock = threading.Lock()
 _limiters: dict[str, "RateLimiter"] = {}
 
@@ -39,18 +30,12 @@ class RateLimiter:
 
 
 def load_rate_limits() -> dict[str, float]:
-    ensure_dirs()
-    if not _LIMITS_FILE.exists():
-        return dict(DEFAULT_LIMITS)
-    try:
-        raw = json.loads(_LIMITS_FILE.read_text(encoding="utf-8"))
-        out = dict(DEFAULT_LIMITS)
-        for k in DEFAULT_LIMITS:
-            if k in raw:
-                out[k] = float(raw[k])
-        return out
-    except Exception:
-        return dict(DEFAULT_LIMITS)
+    limits = get_section("rate_limits")
+    return {
+        "chat_send_sec": float(limits.get("chat_send_sec", 0.85)),
+        "redeem_sec": float(limits.get("redeem_sec", 1.0)),
+        "gql_sec": float(limits.get("gql_sec", 0.35)),
+    }
 
 
 def _get_limiter(name: str, config_key: str) -> RateLimiter:
@@ -62,6 +47,7 @@ def _get_limiter(name: str, config_key: str) -> RateLimiter:
 
 
 def reload_limiters() -> None:
+    reload_settings()
     with _lock:
         _limiters.clear()
 

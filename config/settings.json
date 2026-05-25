@@ -1,0 +1,25 @@
+{
+  "rate_limits": {
+    "chat_send_sec": 0.85,
+    "redeem_sec": 1.0,
+    "gql_sec": 0.35
+  },
+  "cache_ttl_sec": {
+    "streamers_meta": 180,
+    "points": 120,
+    "rewards": 900,
+    "offline_max": 604800
+  },
+  "runner": {
+    "reconcile_interval_sec": 5,
+    "max_restart_attempts": 3,
+    "restart_backoff_sec": [5, 15, 45],
+    "heartbeat_interval_sec": 10,
+    "status_interval_sec": 15
+  },
+  "background_refresh_interval_sec": 90,
+  "log_rotation": {
+    "max_bytes": 5242880,
+    "backup_count": 3
+  }
+}
