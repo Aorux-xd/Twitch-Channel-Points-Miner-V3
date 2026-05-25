@@ -72,9 +72,9 @@ def create_app():
 
     threading.Thread(target=_background_worker, daemon=True).start()
     try:
-        from TwitchChannelPointsMiner.platform.account_store import migrate_py_accounts_to_json
+        from TwitchChannelPointsMiner.platform.account_store import ensure_accounts_from_cookies
 
-        migrate_py_accounts_to_json()
+        ensure_accounts_from_cookies()
     except Exception:
         pass
     if twitch_network_ok():
@@ -85,7 +85,7 @@ def create_app():
         return jsonify(
             {
                 "status": "ok",
-                "version": "3.1.0",
+                "version": "3.2.0",
                 "twitch_online": twitch_network_ok(),
             }
         )
@@ -105,8 +105,14 @@ def create_app():
         uptime_s = int(time.time() - boot)
         mem = psutil.virtual_memory()
         cpu_pct = psutil.cpu_percent(interval=0.1)
-        sessions = load_sessions()
+        from TwitchChannelPointsMiner.platform.sessions import (
+            active_worker_usernames,
+            multi_runner_system_stats,
+        )
+
+        desired = load_sessions()
         disk = psutil.disk_usage("/")
+        runner = multi_runner_system_stats()
         return jsonify(
             {
                 "cpu": f"{cpu_pct:.1f}%",
@@ -120,13 +126,15 @@ def create_app():
                 "uptime": f"{uptime_s // 86400}d {(uptime_s % 86400) // 3600}h {(uptime_s % 3600) // 60}m",
                 "uptime_seconds": uptime_s,
                 "status": "Healthy",
-                "active_sessions": len(sessions),
+                "active_sessions": len(desired),
+                "active_workers": len(active_worker_usernames()),
+                "multi_session": runner,
                 "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                 "platform": platform.platform(),
                 "hostname": platform.node(),
                 "os_name": platform.system(),
                 "twitch_online": twitch_network_ok(),
-                "api_version": "3.1.0",
+                "api_version": "3.2.0",
             }
         )
 
@@ -181,13 +189,16 @@ def create_app():
 
     @app.get("/api/accounts")
     def accounts_list():
-        sessions = load_sessions()
-        data = accounts_service.list_accounts(running=set(sessions.keys()))
+        from TwitchChannelPointsMiner.platform.sessions import active_worker_usernames
+
+        desired = load_sessions()
+        running = active_worker_usernames()
+        data = accounts_service.list_accounts(running=running)
         for row in data:
-            meta = sessions.get(row["username"], {})
-            row["pid"] = meta.get("pid")
+            meta = desired.get(row["username"], {})
             row["startedAt"] = meta.get("startedAt")
-            row["screen"] = meta.get("screen")
+            row["desired"] = row["username"] in desired
+            row["mode"] = meta.get("mode", "multi")
         return jsonify({"accounts": data})
 
     @app.post("/api/accounts")
@@ -257,7 +268,24 @@ def create_app():
 
     @app.get("/api/sessions")
     def sessions_list():
-        return jsonify({"sessions": load_sessions()})
+        from TwitchChannelPointsMiner.platform.sessions import (
+            active_worker_usernames,
+            multi_runner_system_stats,
+        )
+
+        return jsonify(
+            {
+                "sessions": load_sessions(),
+                "active_workers": sorted(active_worker_usernames()),
+                "runner": multi_runner_system_stats(),
+            }
+        )
+
+    @app.get("/api/sessions/debug")
+    def sessions_debug_route():
+        from TwitchChannelPointsMiner.platform.sessions import sessions_debug
+
+        return jsonify(sessions_debug())
 
     @app.post("/api/sessions/start")
     def sessions_start():

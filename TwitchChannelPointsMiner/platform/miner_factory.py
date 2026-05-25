@@ -38,7 +38,7 @@ def _int(v: Any, default: int) -> int:
 
 
 def create_miner_from_config(username: str, config: dict[str, Any]) -> TwitchChannelPointsMiner:
-    """Single factory for dashboard / session_runner — replaces generated accounts/*.py."""
+    """Single factory for multi_session_runner — config from accounts.json only."""
     username = str(config.get("username") or username).strip()
     password = config.get("password") or None
 

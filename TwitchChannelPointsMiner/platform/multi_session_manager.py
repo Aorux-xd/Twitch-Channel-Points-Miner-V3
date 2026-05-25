@@ -1,14 +1,17 @@
-"""Run multiple bot miners in one OS process (threads). State driven by var/sessions.json."""
+"""Multi-bot session manager: one OS process, reconcile desired vs running workers."""
 
 from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
+import os
 import signal
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +21,11 @@ from TwitchChannelPointsMiner.platform.miner_factory import create_miner_from_co
 from TwitchChannelPointsMiner.platform.miner_streamer_sync import sync_streamers_to_miner
 from TwitchChannelPointsMiner.platform.paths import (
     COOKIES_DIR,
+    LOGS_DIR,
     ROOT,
     SESSIONS_FILE,
     STATUS_DIR,
+    VAR_DIR,
     ensure_dirs,
 )
 from TwitchChannelPointsMiner.platform.streamers_store import streamers_for_miner
@@ -28,9 +33,20 @@ from TwitchChannelPointsMiner.platform.twitch_gql import invalidate_twitch
 
 logger = logging.getLogger(__name__)
 
-RECONCILE_INTERVAL_SEC = 5.0
+RECONCILE_INTERVAL_SEC = 6.0
 STATUS_INTERVAL_SEC = 15.0
-MANAGER_PID_FILE = ROOT / "var" / "multi_session.pid"
+MANAGER_PID_FILE = VAR_DIR / "multi_session.pid"
+STATE_FILE = VAR_DIR / "multi_session_state.json"
+SESSION_LOG_DIR = LOGS_DIR / "sessions"
+STOP_JOIN_TIMEOUT_SEC = 30.0
+
+
+class WorkerState(str, Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    ERROR = "error"
 
 
 @dataclass
@@ -38,12 +54,14 @@ class _AccountWorker:
     username: str
     thread: threading.Thread
     stop_event: threading.Event = field(default_factory=threading.Event)
+    state: WorkerState = WorkerState.STARTING
     miner: Any = None
     started_at: int = 0
     last_error: str | None = None
 
 
-def _read_sessions_file() -> dict[str, dict]:
+def read_desired_sessions() -> dict[str, dict]:
+    """Desired bots from var/sessions.json (never cleared by manager death)."""
     ensure_dirs()
     if not SESSIONS_FILE.exists():
         return {}
@@ -73,15 +91,64 @@ def manager_pid_running() -> int | None:
         return None
     import psutil
 
-    if psutil.pid_exists(pid):
-        try:
-            p = psutil.Process(pid)
-            cmd = " ".join(p.cmdline()).lower()
-            if "multi_session_runner" in cmd:
-                return pid
-        except Exception:
-            pass
+    if not psutil.pid_exists(pid):
+        return None
+    try:
+        cmd = " ".join(psutil.Process(pid).cmdline()).lower()
+        if "multi_session_runner" in cmd:
+            return pid
+    except Exception:
+        return None
     return None
+
+
+def _setup_runner_logging() -> None:
+    ensure_dirs()
+    SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger()
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    manager_log = LOGS_DIR / "multi_session_runner.log"
+    if not any(
+        getattr(h, "baseFilename", None) == str(manager_log) for h in root.handlers
+    ):
+        fh = logging.handlers.RotatingFileHandler(
+            manager_log,
+            maxBytes=2_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        root.addHandler(fh)
+
+
+def _bot_logger(username: str) -> logging.Logger:
+    ensure_dirs()
+    SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    bot = logging.getLogger(f"miner.{username}")
+    log_path = SESSION_LOG_DIR / f"{username}.log"
+    if not any(
+        getattr(h, "baseFilename", None) == str(log_path) for h in bot.handlers
+    ):
+        fh = logging.handlers.RotatingFileHandler(
+            log_path,
+            maxBytes=1_500_000,
+            backupCount=2,
+            encoding="utf-8",
+        )
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        )
+        bot.addHandler(fh)
+        bot.setLevel(logging.INFO)
+        bot.propagate = True
+    return bot
 
 
 class MultiSessionManager:
@@ -90,6 +157,7 @@ class MultiSessionManager:
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
         self._streamers: list = []
+        self._reconcile_errors: dict[str, str] = {}
 
     def _account_ready(self, username: str) -> str | None:
         if not get_account_config(username):
@@ -98,34 +166,77 @@ class MultiSessionManager:
             return "missing_cookie"
         return None
 
+    def _publish_state(self) -> None:
+        with self._lock:
+            workers = {}
+            for u, w in self._workers.items():
+                workers[u] = {
+                    "state": w.state.value,
+                    "thread_alive": w.thread.is_alive(),
+                    "started_at": w.started_at,
+                    "last_error": w.last_error,
+                }
+            errors = dict(self._reconcile_errors)
+        desired = read_desired_sessions()
+        payload = {
+            "manager_pid": os.getpid(),
+            "manager_alive": True,
+            "updated_at": int(time.time()),
+            "desired": list(desired.keys()),
+            "desired_count": len(desired),
+            "running_count": sum(
+                1 for w in workers.values() if w.get("thread_alive")
+            ),
+            "workers": workers,
+            "reconcile_errors": errors,
+        }
+        ensure_dirs()
+        STATE_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def _miner_loop(self, username: str, stop: threading.Event) -> None:
-        worker = self._workers.get(username)
+        bot_log = _bot_logger(username)
+        worker: _AccountWorker | None = None
+        with self._lock:
+            worker = self._workers.get(username)
+            if worker:
+                worker.state = WorkerState.STARTING
+        self._publish_state()
+
         try:
             cfg = get_account_config(username)
             if not cfg:
-                raise RuntimeError("no config in accounts.json")
+                raise RuntimeError("нет записи в config/accounts.json")
             miner = create_miner_from_config(username, cfg)
-            if worker:
-                worker.miner = miner
+            with self._lock:
+                w = self._workers.get(username)
+                if w:
+                    w.miner = miner
+                    w.state = WorkerState.RUNNING
+            self._publish_state()
+
             streamers = self._streamers or streamers_for_miner()
             if not streamers:
-                raise RuntimeError("no streamers in config/streamers.json")
+                raise RuntimeError("config/streamers.json пуст")
 
-            log_event("info", "session", f"Майнер {username} стартует (multi)", account=username)
+            bot_log.info("miner start")
+            log_event("info", "session", f"Майнер {username} стартует", account=username)
 
             status_stop = threading.Event()
 
             def status_loop() -> None:
-                ensure_dirs()
                 path = STATUS_DIR / f"{username}.json"
                 prev: dict[str, int] = {}
                 stop_flag = STATUS_DIR / f"{username}.stop"
                 while not status_stop.is_set() and not stop.is_set():
-                    if stop_flag.exists():
+                    if stop_flag.exists() or self._shutdown.is_set():
                         try:
                             stop_flag.unlink(missing_ok=True)
                         except Exception:
                             pass
+                        bot_log.info("stop requested")
                         try:
                             miner.end(0, 0)
                         except Exception:
@@ -173,33 +284,49 @@ class MultiSessionManager:
                                 encoding="utf-8",
                             )
                         sync_streamers_to_miner(miner, username)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        bot_log.debug("status tick: %s", e)
                     status_stop.wait(STATUS_INTERVAL_SEC)
 
-            threading.Thread(target=status_loop, daemon=True).start()
+            threading.Thread(
+                target=status_loop, name=f"status-{username}", daemon=True
+            ).start()
 
             miner.mine(streamers, followers=False)
             status_stop.set()
+            bot_log.info("miner stopped normally")
             log_event("warning", "session", f"Майнер {username} остановлен", account=username)
         except Exception as e:
-            if worker:
-                worker.last_error = str(e)
+            bot_log.exception("miner failed: %s", e)
+            with self._lock:
+                w = self._workers.get(username)
+                if w:
+                    w.last_error = str(e)
+                    w.state = WorkerState.ERROR
             log_event("error", "session", f"Майнер {username}: {e}", account=username)
-            logger.exception("miner thread %s failed", username)
         finally:
             invalidate_twitch(username)
             with self._lock:
-                self._workers.pop(username, None)
+                w = self._workers.pop(username, None)
+                if w:
+                    w.state = WorkerState.STOPPED
+            self._publish_state()
 
     def start_account(self, username: str) -> str | None:
         username = username.strip()
         reason = self._account_ready(username)
         if reason:
+            self._reconcile_errors[username] = reason
             return reason
+        self._reconcile_errors.pop(username, None)
+
         with self._lock:
-            if username in self._workers and self._workers[username].thread.is_alive():
+            existing = self._workers.get(username)
+            if existing and existing.thread.is_alive():
                 return None
+            if existing and not existing.thread.is_alive():
+                self._workers.pop(username, None)
+
             stop_ev = threading.Event()
             thread = threading.Thread(
                 target=self._miner_loop,
@@ -211,49 +338,89 @@ class MultiSessionManager:
                 username=username,
                 thread=thread,
                 stop_event=stop_ev,
+                state=WorkerState.STARTING,
                 started_at=int(time.time()),
             )
             thread.start()
+        log_event("info", "session", f"Запуск потока {username}", account=username)
+        self._publish_state()
         return None
 
-    def stop_account(self, username: str) -> None:
+    def stop_account(self, username: str, *, graceful: bool = True) -> None:
         username = username.strip()
         with self._lock:
             w = self._workers.get(username)
         if not w:
             return
+        w.state = WorkerState.STOPPING
+        self._publish_state()
         w.stop_event.set()
         flag = STATUS_DIR / f"{username}.stop"
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(str(int(time.time())), encoding="utf-8")
-        w.thread.join(timeout=25)
+        if graceful:
+            w.thread.join(timeout=STOP_JOIN_TIMEOUT_SEC)
         invalidate_twitch(username)
+        with self._lock:
+            if not w.thread.is_alive():
+                self._workers.pop(username, None)
+        self._publish_state()
+        log_event("warning", "session", f"Поток {username} остановлен", account=username)
 
-    def reconcile(self, desired: dict[str, dict]) -> None:
+    def _prune_dead_workers(self) -> None:
+        with self._lock:
+            dead = [u for u, w in self._workers.items() if not w.thread.is_alive()]
+            for u in dead:
+                w = self._workers.pop(u)
+                if w.state not in (WorkerState.ERROR, WorkerState.STOPPED):
+                    w.state = WorkerState.STOPPED
+
+    def reconcile(self, desired: dict[str, dict]) -> dict[str, str]:
+        """Sync running worker threads with desired session keys."""
+        self._prune_dead_workers()
         desired_names = set(desired.keys())
         with self._lock:
-            running = set(self._workers.keys())
-        for username in desired_names - running:
+            running = {
+                u
+                for u, w in self._workers.items()
+                if w.thread.is_alive()
+            }
+
+        actions: dict[str, str] = {}
+
+        for username in sorted(desired_names - running):
             err = self.start_account(username)
             if err:
-                log_event(
-                    "warning",
-                    "session",
-                    f"Не запущен {username}: {err}",
-                    account=username,
-                )
-        for username in running - desired_names:
+                actions[username] = f"start_failed:{err}"
+            else:
+                actions[username] = "started"
+
+        for username in sorted(running - desired_names):
             self.stop_account(username)
+            actions[username] = "stopped"
+
+        self._publish_state()
+        return actions
+
+    def shutdown_all(self) -> None:
+        log_event("info", "session", "Graceful shutdown всех ботов")
+        with self._lock:
+            names = list(self._workers.keys())
+        for name in names:
+            self.stop_account(name)
+        self._publish_state()
 
     def run_forever(self) -> None:
+        _setup_runner_logging()
         self._streamers = streamers_for_miner()
         if not self._streamers:
-            logger.error("No streamers configured — multi session manager exiting")
-            return
+            logger.error("Нет стримеров в config/streamers.json")
+            sys.exit(2)
 
-        _write_manager_pid(__import__("os").getpid())
+        _write_manager_pid(os.getpid())
 
         def handle_signal(signum, frame):
+            logger.info("Signal %s — shutdown", signum)
             self._shutdown.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -262,24 +429,70 @@ class MultiSessionManager:
             except (ValueError, OSError):
                 pass
 
-        log_event("info", "session", "Multi-session manager запущен")
+        log_event("info", "session", "Multi-session runner запущен (reconcile loop)")
+        logger.info(
+            "Reconcile every %ss — desired state: %s",
+            RECONCILE_INTERVAL_SEC,
+            SESSIONS_FILE,
+        )
         try:
             while not self._shutdown.is_set():
-                desired = _read_sessions_file()
-                self.reconcile(desired)
+                desired = read_desired_sessions()
+                actions = self.reconcile(desired)
+                if actions:
+                    logger.info("reconcile: %s", actions)
                 time.sleep(RECONCILE_INTERVAL_SEC)
         finally:
-            with self._lock:
-                names = list(self._workers.keys())
-            for name in names:
-                self.stop_account(name)
+            self.shutdown_all()
             _clear_manager_pid()
-            log_event("info", "session", "Multi-session manager завершён")
+            if STATE_FILE.exists():
+                try:
+                    stale = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                    stale["manager_alive"] = False
+                    stale["updated_at"] = int(time.time())
+                    STATE_FILE.write_text(
+                        json.dumps(stale, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    STATE_FILE.unlink(missing_ok=True)
+            log_event("info", "session", "Multi-session runner завершён")
 
-    def active_usernames(self) -> list[str]:
+    def debug_snapshot(self) -> dict:
         with self._lock:
-            return [
-                u
+            workers = {
+                u: {
+                    "state": w.state.value,
+                    "thread_alive": w.thread.is_alive(),
+                    "started_at": w.started_at,
+                    "last_error": w.last_error,
+                }
                 for u, w in self._workers.items()
-                if w.thread.is_alive()
-            ]
+            }
+        desired = read_desired_sessions()
+        return {
+            "manager_pid": manager_pid_running() or os.getpid(),
+            "desired": desired,
+            "workers": workers,
+            "reconcile_errors": dict(self._reconcile_errors),
+        }
+
+
+def get_runtime_state() -> dict:
+    """Read last published state (for API when runner is separate process)."""
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    desired = read_desired_sessions()
+    pid = manager_pid_running()
+    return {
+        "manager_pid": pid,
+        "manager_alive": pid is not None,
+        "desired": list(desired.keys()),
+        "desired_count": len(desired),
+        "running_count": 0,
+        "workers": {},
+        "reconcile_errors": {},
+    }

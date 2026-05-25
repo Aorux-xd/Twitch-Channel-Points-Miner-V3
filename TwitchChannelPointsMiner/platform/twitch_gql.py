@@ -29,7 +29,7 @@ POINTS_CACHE_FILE = VAR_DIR / "points_cache.json"
 META_TTL = 120
 POINTS_TTL = 60
 REWARDS_CACHE_FILE = VAR_DIR / "rewards_cache.json"
-REWARDS_TTL = 600
+REWARDS_TTL = 900
 # When Twitch is unreachable, still serve last known cache (up to 7 days).
 OFFLINE_CACHE_TTL = 86400 * 7
 

@@ -2,7 +2,7 @@
 
 > **Полная документация:** [README.md](./README.md) · [CHANGELOG.md](./CHANGELOG.md)
 
-## Architecture (V3.1)
+## Architecture (V3.2)
 
 | Layer | Path | Role |
 |-------|------|------|
@@ -22,8 +22,8 @@
 1. Add streamers in UI → `config/streamers.json`.
 2. Create account in UI → `config/accounts.json`.
 3. Start session → `POST /api/sessions/start` → entry in `var/sessions.json` → `multi_session_runner` starts thread for bot.
-4. Status → `var/status/<username>.json` every 15s.
-5. Stop → remove from `sessions.json` + `var/status/<user>.stop` flag.
+4. Status → `var/status/<username>.json` every 15s; runner state → `var/multi_session_state.json`.
+5. Stop → remove from `sessions.json` (reconciler stops thread) + optional `var/status/<user>.stop`.
 
 ## Run (development)
 
@@ -49,19 +49,21 @@ Optional: run multi runner manually (panel starts it automatically):
 ./venv/bin/python multi_session_runner.py
 ```
 
-## Migration to V3.1
+## Migration to V3.2
 
-If you used **V3.0 or older** (screen per bot, `accounts/*.py`):
+From **V3.1** or older (screen per bot):
 
 1. Pull code and rebuild UI.
-2. Stop all legacy screens: `for s in $(screen -ls | grep twitch | awk '{print $1}'); do screen -S "$s" -X quit; done`
-3. Start bots from the panel only.
-4. Open **Аккаунты** → **переавторизовать** for each bot (fresh TV code).
-5. Optional: remove obsolete `accounts/*.py` after confirming `config/accounts.json` has all bots.
+2. Stop legacy screens and any old multi runner process.
+3. Start bots from the panel (starts `multi_session_runner` if needed).
+4. **Аккаунты** → **переавторизовать** if chat shows `msg_rejected` or `WRONG_ACCOUNT`.
+5. Debug: `GET /api/sessions/debug`, logs under `logs/sessions/`.
 
 ## API (short)
 
-- `GET /api/health` — `version: 3.1.0`
+- `GET /api/health` — `version: 3.2.0`
+- `GET /api/system` — CPU/RAM + `multi_session` stats
+- `GET /api/sessions/debug` — desired vs running workers
 - `GET|POST|DELETE /api/streamers`
 - `GET|POST /api/accounts` — JSON config
 - `POST /api/sessions/start|stop|restart`
@@ -71,6 +73,7 @@ If you used **V3.0 or older** (screen per bot, `accounts/*.py`):
 
 ## Notes
 
-- **Do not** use one screen per bot anymore; use multi runner.
-- `session_runner.py --username X` is deprecated (single-bot debug only).
+- Production runner: `multi_session_runner.py` only.
+- Single-bot debug: `python multi_session_runner.py --single USERNAME`
 - GQL hash overrides: `var/gql_hashes.json`
+- Rate limits: `config/rate_limits.json`

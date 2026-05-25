@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from TwitchChannelPointsMiner.platform.paths import ACCOUNTS_DIR, CONFIG_DIR, ensure_dirs
+from TwitchChannelPointsMiner.platform.paths import COOKIES_DIR, CONFIG_DIR, ensure_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -82,19 +82,17 @@ def delete_account_config(username: str) -> None:
     _save_store(store)
 
 
-def migrate_py_accounts_to_json() -> int:
-    """One-time import: accounts/*.py -> config/accounts.json (keeps .py as fallback)."""
+def ensure_accounts_from_cookies() -> int:
+    """Create default JSON entries for cookie files missing from accounts.json."""
     imported = 0
     store = _load_store()
-    for py in ACCOUNTS_DIR.glob("*.py"):
-        if py.name.startswith("_"):
-            continue
-        username = py.stem
+    for pkl in COOKIES_DIR.glob("*.pkl"):
+        username = pkl.stem
         if username in store:
             continue
         store[username] = dict(DEFAULT_ACCOUNT_CONFIG)
         imported += 1
     if imported:
         _save_store(store)
-        logger.info("Migrated %s account(s) from .py stubs to accounts.json", imported)
+        logger.info("Added %s account(s) to accounts.json from cookies", imported)
     return imported

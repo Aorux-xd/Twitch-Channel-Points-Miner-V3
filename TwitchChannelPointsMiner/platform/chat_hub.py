@@ -40,11 +40,18 @@ HELIX_SCOPE_HINT = (
 def _helix_error_ru(code: str | None, raw: str | None) -> str:
     """Понятное описание ошибки Helix для панели."""
     raw_l = (raw or "").lower()
+    if code == "WRONG_ACCOUNT":
+        return (
+            raw
+            or "cookie не совпадает с логином бота — переавторизуйте с правильного аккаунта"
+        )
     if code == "msg_rejected":
         return (
-            "Twitch отклонил сообщение: ограничение на аккаунте "
-            "(бан в чате, не подтверждён email/телефон, подозрительная активность)"
+            "Twitch отклонил сообщение (msg_rejected): проверьте бан в чате, "
+            "email/телефон, или переавторизуйте бота"
         )
+    if code == "RATE_LIMIT":
+        return "лимит Twitch — подождите 3–5 секунд"
     if code == "MISSING_SCOPE" or "user:write:chat" in (raw or ""):
         return HELIX_SCOPE_HINT
     if "too quickly" in raw_l:

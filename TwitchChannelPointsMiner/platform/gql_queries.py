@@ -99,6 +99,7 @@ def _write_hash_cache(cache: dict[str, str]) -> None:
 
 
 def persisted_hash(operation_name: str, query: str | None = None) -> str:
+    """Override via var/gql_hashes.json; falls back to PERSISTED_HASHES."""
     overrides = _read_hash_cache()
     if operation_name in overrides:
         return overrides[operation_name]
@@ -233,10 +234,11 @@ def post_browser_gql(client, *, operation_name: str, variables: dict, query: str
 
 
 def post_tv_gql(client, body: dict) -> dict:
-    """Drop-in for Twitch.post_gql_request when body is persisted template."""
+    """Primary TV-client GQL path (replaces direct requests in Twitch.py)."""
     op = body.get("operationName", "unknown")
+    variables = body.get("variables")
     return GQLClient(client, browser=False).post(
-        op, body.get("variables"), body=body, use_persisted=True
+        op, variables, body=body, use_persisted=True
     )
 
 

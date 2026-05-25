@@ -1,5 +1,37 @@
 # Changelog
 
+## [3.2.0] — 2026-05-24
+
+### P1 — Multi-session & legacy cleanup
+
+- **Reconciler** каждые 6 с: `var/sessions.json` (desired) ↔ реальные потоки; graceful shutdown по SIGINT/SIGTERM.
+- Per-bot логи: `logs/sessions/<username>.log`, общий `logs/multi_session_runner.log`; снимок `var/multi_session_state.json`.
+- Удалён `session_runner.py`; production — только `multi_session_runner.py` (`--single USER` для отладки).
+- API/сессии без screen и без `accounts/*.py`; `ensure_accounts_from_cookies()` вместо миграции `.py`.
+- **GQL:** `persisted_hash()` читает `var/gql_hashes.json`; все TV GQL через `GQLClient` / `post_tv_gql()`.
+
+### P2 — Chat, auth, monitoring
+
+- Буфер чата до 100 сообщений в API; улучшенные тексты `msg_rejected`, `RATE_LIMIT`, `WRONG_ACCOUNT`.
+- После переавторизации — автоматический restart в multi-runner.
+- `GET /api/sessions/debug` — desired + workers + runner PID.
+- `GET /api/system` — `active_workers`, блок `multi_session`.
+
+### P3
+
+- TTL кэша наград **15 мин** (`REWARDS_TTL = 900`).
+- Настраиваемые rate limits: `config/rate_limits.json`.
+- События старт/стоп ботов в `platform_events.jsonl`.
+
+### Migration V3.1 → V3.2
+
+1. `git pull` + `cd ui && npm run build`
+2. Остановить старые `twitch*` screen и прежний multi runner
+3. `./venv/bin/python multi_session_runner.py` (или старт из панели)
+4. Запустить ботов в UI; при проблемах чата — **переавторизовать** каждого бота
+
+---
+
 ## [3.1.0] — 2026-05-24
 
 ### Architecture
