@@ -1,6 +1,9 @@
+"""Bot session control — V3.1: one multi_session_runner process, state in var/sessions.json."""
+
+from __future__ import annotations
+
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -9,14 +12,22 @@ from pathlib import Path
 
 import psutil
 
+from TwitchChannelPointsMiner.platform.account_store import get_account_config
 from TwitchChannelPointsMiner.platform.events_log import log_event
-from TwitchChannelPointsMiner.platform.paths import ROOT, SESSIONS_FILE, STATUS_DIR, ensure_dirs
+from TwitchChannelPointsMiner.platform.multi_session_manager import (
+    manager_pid_running,
+)
+from TwitchChannelPointsMiner.platform.paths import (
+    COOKIES_DIR,
+    ROOT,
+    SESSIONS_FILE,
+    STATUS_DIR,
+    ensure_dirs,
+)
+from TwitchChannelPointsMiner.platform.streamers_store import streamers_for_miner
 
-SESSION_RUNNER = ROOT / "session_runner.py"
-
-SCREEN_NAME_RE = re.compile(r"^twitch\d+$")
-SCREEN_LINE_RE = re.compile(r"^\s*\d+\.(\S+)\s+\(")
-SCREEN_START_SLEEP = 1.2
+MULTI_SESSION_RUNNER = ROOT / "multi_session_runner.py"
+MANAGER_START_SLEEP = 2.0
 
 
 def _python_executable() -> str:
@@ -33,113 +44,16 @@ def _read_json(path: Path, default):
         return default
 
 
-def _write_json(path: Path, data):
+def _write_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _screen_available() -> bool:
-    if os.name == "nt":
-        return False
-    try:
-        subprocess.run(
-            ["screen", "-v"],
-            capture_output=True,
-            check=False,
-            timeout=3,
-        )
-        return True
-    except Exception:
-        return False
-
-
-def _screen_list() -> list[tuple[str, str]]:
-    """Parse screen -ls like legacy manager.py."""
-    sessions = []
-    try:
-        output = subprocess.check_output(
-            ["screen", "-ls"],
-            text=True,
-            stderr=subprocess.STDOUT,
-            timeout=5,
-        )
-    except Exception:
-        return sessions
-    for line in output.splitlines():
-        if ".twitch" not in line:
-            continue
-        if "Detached" not in line and "Attached" not in line:
-            continue
-        parts = line.strip().split()
-        if len(parts) < 2:
-            continue
-        sess_id = parts[0] if "." in parts[0] else parts[1]
-        if "." not in sess_id:
-            continue
-        name = sess_id.split(".", 1)[1].split()[0]
-        status = next((p for p in parts if "(" in p), "(Unknown)").strip("()")
-        sessions.append((name, status))
-    return sessions
-
-
-def _allocate_screen_name(sessions: dict) -> str:
-    used = {
-        str(m.get("screen"))
-        for m in sessions.values()
-        if m.get("screen") and SCREEN_NAME_RE.match(str(m.get("screen")))
-    }
-    running = {name for name, _ in _screen_list()}
-    used |= running
-    n = 1
-    while f"twitch{n}" in used:
-        n += 1
-    return f"twitch{n}"
-
-
-def _screen_session_exists(name: str) -> bool:
-    return any(n == name for n, _ in _screen_list())
-
-
-def _quit_screen(name: str) -> None:
-    if not name:
-        return
-    subprocess.run(
-        ["screen", "-S", name, "-X", "quit"],
-        capture_output=True,
-        check=False,
-        timeout=5,
-        cwd=str(ROOT),
-    )
-
-
-def _start_screen_session(name: str, *program_args: str) -> bool:
-    """
-    Legacy manager.py pattern (one process per screen):
-      screen -dmS twitch1 venv/bin/python session_runner.py --username bot
-    Config lives in accounts/<bot>.py — not a second copy under run_panel/.
-    """
-    py = _python_executable()
-    cmd = ["screen", "-dmS", name, py, *program_args]
-    try:
-        subprocess.run(cmd, cwd=str(ROOT), check=True, timeout=15)
-        time.sleep(SCREEN_START_SLEEP)
-        return _screen_session_exists(name)
-    except Exception:
-        return False
-
-
-def _kill_process_tree(pid: int):
+def _kill_pid(pid: int) -> None:
     if not pid:
         return
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(pid)],
-            capture_output=True,
-            check=False,
-        )
     try:
         proc = psutil.Process(pid)
-        children = proc.children(recursive=True)
-        for child in children:
+        for child in proc.children(recursive=True):
             try:
                 child.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -155,227 +69,143 @@ def _kill_process_tree(pid: int):
             pass
 
 
-def _runner_pids(username: str) -> list[int]:
-    """Find miner processes for account."""
-    pids = []
-    safe = username.lower()
-    needle = f"--username {safe}"
-    for proc in psutil.process_iter(["pid", "cmdline"]):
-        try:
-            cmdline = proc.info.get("cmdline") or []
-            joined = " ".join(str(x) for x in cmdline).lower()
-            if "session_runner.py" in joined and needle in joined:
-                pids.append(int(proc.info["pid"]))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return pids
+def load_sessions() -> dict:
+    """Active bots declared in sessions.json while multi manager is alive."""
+    ensure_dirs()
+    data = _read_json(SESSIONS_FILE, {"sessions": {}})
+    sessions = dict(data.get("sessions") or {})
+    if not manager_pid_running():
+        if sessions:
+            _write_json(SESSIONS_FILE, {"sessions": {}})
+        return {}
+    return sessions
 
 
-def _pid_is_running(pid: int) -> bool:
+def _save_sessions(sessions: dict) -> None:
+    _write_json(SESSIONS_FILE, {"sessions": sessions})
+
+
+def _ensure_multi_manager() -> bool:
+    if manager_pid_running():
+        return True
+    if not MULTI_SESSION_RUNNER.is_file():
+        return False
+    py = _python_executable()
     try:
-        return psutil.pid_exists(pid) and psutil.Process(pid).is_running()
+        proc = subprocess.Popen(
+            [py, str(MULTI_SESSION_RUNNER)],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        time.sleep(MANAGER_START_SLEEP)
+        if manager_pid_running():
+            return True
+        if proc.poll() is not None:
+            return False
+        time.sleep(1.0)
+        return manager_pid_running() is not None
     except Exception:
         return False
 
 
-def load_sessions() -> dict:
-    ensure_dirs()
-    data = _read_json(SESSIONS_FILE, {"sessions": {}})
-    sessions = data.get("sessions", {})
-    changed = False
-    for username, meta in list(sessions.items()):
-        screen = meta.get("screen")
-        pid = int(meta.get("pid") or 0)
-        alive = False
-        if screen and _screen_session_exists(screen):
-            alive = True
-        elif pid and _pid_is_running(pid):
-            alive = True
-        elif _runner_pids(username):
-            alive = True
-        if not alive:
-            sessions.pop(username, None)
-            changed = True
-    if changed:
-        _save_sessions(sessions)
-    return sessions
-
-
-def _save_sessions(sessions: dict):
-    _write_json(SESSIONS_FILE, {"sessions": sessions})
+def _account_can_start(username: str) -> str | None:
+    if not get_account_config(username):
+        return "missing_json_config"
+    if not (COOKIES_DIR / f"{username}.pkl").exists():
+        return "missing_cookie"
+    return None
 
 
 def start_sessions(usernames: list[str]) -> dict:
-    from TwitchChannelPointsMiner.platform.paths import ACCOUNTS_DIR
-    from TwitchChannelPointsMiner.platform.streamers_store import streamers_for_miner
-
     usernames = [str(u).strip() for u in usernames if str(u).strip()]
-    sessions = load_sessions()
-    started = []
-    skipped = []
-
-    use_screen = _screen_available()
-    streamers = streamers_for_miner()
-    if not streamers:
+    if not streamers_for_miner():
         return {
             "started": [],
             "skipped": [
-                {
-                    "username": u,
-                    "reason": "no_streamers_configured",
-                }
+                {"username": u, "reason": "no_streamers_configured"} for u in usernames
+            ],
+        }
+
+    if not _ensure_multi_manager():
+        return {
+            "started": [],
+            "skipped": [
+                {"username": u, "reason": "multi_manager_start_failed"}
                 for u in usernames
             ],
         }
+
+    sessions = _read_json(SESSIONS_FILE, {"sessions": {}}).get("sessions") or {}
+    started = []
+    skipped = []
 
     for username in usernames:
         if username in sessions:
             skipped.append({"username": username, "reason": "already_running"})
             continue
-        account_file = ACCOUNTS_DIR / f"{username}.py"
-        if not account_file.exists():
-            skipped.append({"username": username, "reason": "missing_account_config"})
+        reason = _account_can_start(username)
+        if reason:
+            skipped.append({"username": username, "reason": reason})
             continue
-
-        if not SESSION_RUNNER.is_file():
-            skipped.append({"username": username, "reason": "session_runner_missing"})
-            continue
-
-        runner_args = (str(SESSION_RUNNER), "--username", username)
-        screen_name = None
-        if use_screen:
-            screen_name = _allocate_screen_name(sessions)
-            if _screen_session_exists(screen_name):
-                skipped.append({"username": username, "reason": "screen_name_taken"})
-                continue
-
-            ok = _start_screen_session(screen_name, *runner_args)
-            if not ok:
-                _quit_screen(screen_name)
-                skipped.append({"username": username, "reason": "screen_start_failed"})
-                log_event(
-                    "error",
-                    "session",
-                    f"Не удалось запустить {username} в screen {screen_name}",
-                    account=username,
-                )
-                continue
-
-            pids = _runner_pids(username)
-            runner_pid = max(pids) if pids else 0
-            meta = {
-                "pid": runner_pid,
-                "startedAt": int(time.time()),
-                "screen": screen_name,
+        sessions[username] = {
+            "startedAt": int(time.time()),
+            "mode": "multi",
+            "pid": manager_pid_running(),
+        }
+        started.append(
+            {
+                "username": username,
+                "pid": manager_pid_running(),
+                "mode": "multi",
             }
-            sessions[username] = meta
-            started.append(
-                {
-                    "username": username,
-                    "pid": runner_pid,
-                    "screen": screen_name,
-                }
-            )
-            log_event(
-                "info",
-                "session",
-                f"Сессия {username} запущена (screen {screen_name})",
-                account=username,
-            )
-        else:
-            py = _python_executable()
-            proc = subprocess.Popen(
-                [py, *runner_args],
-                cwd=str(ROOT),
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-            )
-            time.sleep(SCREEN_START_SLEEP)
-            if not _pid_is_running(proc.pid):
-                skipped.append({"username": username, "reason": "runner_exit_early"})
-                log_event(
-                    "error",
-                    "session",
-                    f"Сессия {username} завершилась сразу после запуска",
-                    account=username,
-                )
-                continue
-            meta = {
-                "pid": proc.pid,
-                "startedAt": int(time.time()),
-            }
-            sessions[username] = meta
-            started.append(
-                {
-                    "username": username,
-                    "pid": proc.pid,
-                    "screen": None,
-                }
-            )
-            log_event(
-                "info",
-                "session",
-                f"Сессия {username} запущена (pid {proc.pid})",
-                account=username,
-            )
+        )
+        log_event(
+            "info",
+            "session",
+            f"Сессия {username} поставлена в очередь (multi-process)",
+            account=username,
+        )
 
     _save_sessions(sessions)
     return {"started": started, "skipped": skipped}
 
 
 def stop_sessions(usernames: list[str]) -> dict:
+    from TwitchChannelPointsMiner.platform.twitch_gql import invalidate_twitch
+
     usernames = [str(u).strip() for u in usernames if str(u).strip()]
-    sessions = load_sessions()
+    data = _read_json(SESSIONS_FILE, {"sessions": {}})
+    sessions = dict(data.get("sessions") or {})
     stopped = []
     missing = []
 
-    from TwitchChannelPointsMiner.platform.twitch_gql import drop_twitch_client
-
     for username in usernames:
-        meta = sessions.get(username) or {}
-        pid = int(meta.get("pid") or 0)
-        screen_name = meta.get("screen")
+        if username not in sessions:
+            missing.append(username)
+        else:
+            sessions.pop(username, None)
+            stopped.append(username)
 
         stop_flag = STATUS_DIR / f"{username}.stop"
         stop_flag.parent.mkdir(parents=True, exist_ok=True)
         stop_flag.write_text(str(int(time.time())), encoding="utf-8")
-
-        if screen_name:
-            _quit_screen(screen_name)
-            time.sleep(0.5)
-            if _screen_session_exists(screen_name):
-                _quit_screen(screen_name)
-
-        targets = set(_runner_pids(username))
-        if pid:
-            targets.add(pid)
-
-        if not meta and not targets and not screen_name:
-            missing.append(username)
-            if stop_flag.exists():
-                stop_flag.unlink(missing_ok=True)
-            continue
-
-        for target_pid in targets:
-            _kill_process_tree(target_pid)
-
-        time.sleep(1.5)
-        for target_pid in list(targets):
-            if _pid_is_running(target_pid):
-                _kill_process_tree(target_pid)
-
-        if stop_flag.exists():
-            stop_flag.unlink(missing_ok=True)
-
-        drop_twitch_client(username)
-        sessions.pop(username, None)
-        stopped.append(username)
-        log_event(
-            "warning",
-            "session",
-            f"Бот {username} остановлен"
-            + (f" (screen {screen_name})" if screen_name else ""),
-            account=username,
-        )
+        invalidate_twitch(username)
+        log_event("warning", "session", f"Бот {username} остановлен", account=username)
 
     _save_sessions(sessions)
+
+    if not sessions and manager_pid_running():
+        pid = manager_pid_running()
+        if pid:
+            _kill_pid(pid)
+
     return {"stopped": stopped, "missing": missing}
+
+
+def restart_sessions(usernames: list[str]) -> dict:
+    """Stop then start (used after force re-auth)."""
+    stop_sessions(usernames)
+    time.sleep(2.0)
+    return start_sessions(usernames)

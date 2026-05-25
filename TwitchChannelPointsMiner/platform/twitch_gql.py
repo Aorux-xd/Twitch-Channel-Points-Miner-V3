@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 META_CACHE_FILE = VAR_DIR / "streamers_meta.json"
 POINTS_CACHE_FILE = VAR_DIR / "points_cache.json"
-META_TTL = 45
-POINTS_TTL = 30
+META_TTL = 120
+POINTS_TTL = 60
+REWARDS_CACHE_FILE = VAR_DIR / "rewards_cache.json"
+REWARDS_TTL = 600
 # When Twitch is unreachable, still serve last known cache (up to 7 days).
 OFFLINE_CACHE_TTL = 86400 * 7
 
@@ -299,12 +301,17 @@ def _collect_rewards_from_channel(channel: dict) -> list[dict]:
 
 
 def fetch_channel_rewards(
-    streamer_login: str, account: str | None = None
+    streamer_login: str, account: str | None = None, *, force: bool = False
 ) -> list[dict]:
     client = get_twitch(account)
     if not client:
         return []
     login = streamer_login.lower()
+    cache_key = f"{login}:{account or '_default'}"
+    if not force:
+        cached = _read_cache(REWARDS_CACHE_FILE, REWARDS_TTL)
+        if cached and cache_key in cached.get("by_key", {}):
+            return cached["by_key"][cache_key]
     try:
         body = {
             "operationName": "ChannelPointsCustomRewardsList",
@@ -319,26 +326,30 @@ def fetch_channel_rewards(
             )
         channel = (resp.get("data") or {}).get("channel") or {}
         out = _collect_rewards_from_channel(channel)
-        if out:
-            return sorted(
-                out,
-                key=lambda x: (
-                    0 if x.get("isEnabled", True) else 1,
-                    x.get("cost") or 0,
-                    x.get("name") or "",
-                ),
-            )
+        if not out:
+            payload = copy.deepcopy(GQLOperations.ChannelPointsContext)
+            payload["variables"] = {"channelLogin": login}
+            resp = client.post_gql_request(payload)
+            channel = (resp.get("data") or {}).get("community", {}).get("channel") or {}
+            out = _collect_rewards_from_channel(channel)
 
-        payload = copy.deepcopy(GQLOperations.ChannelPointsContext)
-        payload["variables"] = {"channelLogin": login}
-        resp = client.post_gql_request(payload)
-        channel = (resp.get("data") or {}).get("community", {}).get("channel") or {}
-        return sorted(
-            _collect_rewards_from_channel(channel),
-            key=lambda x: (x.get("cost") or 0, x.get("name") or ""),
+        result = sorted(
+            out,
+            key=lambda x: (
+                0 if x.get("isEnabled", True) else 1,
+                x.get("cost") or 0,
+                x.get("name") or "",
+            ),
         )
+        blob = _read_cache(REWARDS_CACHE_FILE, REWARDS_TTL) or {"by_key": {}}
+        blob.setdefault("by_key", {})[cache_key] = result
+        _write_cache(REWARDS_CACHE_FILE, blob)
+        return result
     except Exception as e:
         logger.warning("fetch_channel_rewards failed: %s", e)
+        stale = _read_cache(REWARDS_CACHE_FILE, OFFLINE_CACHE_TTL)
+        if stale and cache_key in stale.get("by_key", {}):
+            return stale["by_key"][cache_key]
         return []
 
 

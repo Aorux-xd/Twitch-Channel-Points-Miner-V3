@@ -82,7 +82,7 @@ export function AccountsView() {
           <h2 className="text-2xl font-black lowercase flex items-center gap-4">
             <span className="w-12 h-1 bg-lime"></span> управление аккаунтами
           </h2>
-          <p className="text-text-muted text-sm mt-1 lowercase font-mono">конфиги accounts/*.py · cookies создаются при первом запуске</p>
+          <p className="text-text-muted text-sm mt-1 lowercase font-mono">config/accounts.json · multi_session_runner</p>
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
@@ -150,7 +150,7 @@ export function AccountsView() {
             <h3 className="font-bold text-lg mb-1 truncate lowercase relative z-10">{acc.username}</h3>
             <div className="flex items-center gap-2 text-text-muted mb-4 relative z-10 font-mono text-xs flex-wrap">
               <span className="truncate">
-                {acc.has_config === false ? 'нет accounts/*.py' : acc.file || '—'}
+                {acc.has_config === false ? 'нет в accounts.json' : acc.file || '—'}
               </span>
               {acc.screen && (
                 <span className="px-2 py-0.5 rounded border border-lime/30 text-lime">

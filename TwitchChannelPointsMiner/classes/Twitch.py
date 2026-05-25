@@ -301,23 +301,16 @@ class Twitch(object):
 
     def post_gql_request(self, json_data):
         try:
-            response = requests.post(
-                GQLOperations.url,
-                json=json_data,
-                headers={
-                    "Authorization": f"OAuth {self.twitch_login.get_auth_token()}",
-                    "Client-Id": CLIENT_ID,
-                    # "Client-Integrity": self.post_integrity(),
-                    "Client-Session-Id": self.client_session,
-                    "Client-Version": self.update_client_version(),
-                    "User-Agent": self.user_agent,
-                    "X-Device-Id": self.device_id,
-                },
-            )
+            from TwitchChannelPointsMiner.platform.gql_queries import post_tv_gql
+
+            self.client_version = self.update_client_version()
+            payload = post_tv_gql(self, json_data)
             logger.debug(
-                f"Data: {json_data}, Status code: {response.status_code}, Content: {response.text}"
+                "GQL %s ok=%s",
+                json_data.get("operationName"),
+                "errors" not in payload or not payload.get("errors"),
             )
-            return response.json()
+            return payload
         except requests.exceptions.RequestException as e:
             if _is_dns_error(e):
                 _throttled_network_log(
